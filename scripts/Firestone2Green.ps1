@@ -1787,7 +1787,3 @@ if ($state['error']) { exit 1 }
 if ($state.Contains('ok') -and -not $state['ok']) { exit 2 }
 exit 0
 
-
-
-
-

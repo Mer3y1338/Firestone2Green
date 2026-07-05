@@ -68,7 +68,7 @@ namespace Firestone2Green
             baseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             scriptPath = ResolveScriptPath(Path.Combine(baseDir, "scripts", "Firestone2Green.ps1"));
             reportDir = Path.Combine(Path.GetDirectoryName(scriptPath) ?? baseDir, "FirestoneOfflineReports");
-            avatarPath = Path.Combine(baseDir, "assets", "avatar.jpg");
+            avatarPath = ResolveAvatarPath(Path.Combine(baseDir, "assets", "avatar.jpg"));
             iconPath = Path.Combine(baseDir, "assets", "app.ico");
             BuildUi();
             RefreshEnvironmentLabels();
@@ -117,6 +117,7 @@ namespace Firestone2Green
 
             AppendLog("项目目录: " + baseDir);
             AppendLog("脚本路径: " + scriptPath);
+            AppendLog("头像资源: " + avatarPath);
             AppendLog("推荐流程：首次点击“一键重启并授权”；需要持久化时点击“安装持续修复”（只安装监听，不会主动启动 Firestone），以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
         }
 
@@ -495,6 +496,7 @@ namespace Firestone2Green
             if (!File.Exists(scriptPath)) { AppendLog("找不到脚本: " + scriptPath); return; }
             Directory.CreateDirectory(reportDir);
             string args = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(scriptPath) + " -Mode " + mode + " -AutomationPort 18765";
+            if (File.Exists(avatarPath)) args += " -AvatarImagePath " + Quote(avatarPath);
             if (mode == "LaunchAuth" || mode == "Launch" || mode == "All")
             {
                 args += " -MonitorSeconds " + monitorSecondsBox.Value.ToString();
@@ -566,6 +568,33 @@ namespace Firestone2Green
             }
             catch { }
             return portableScriptPath;
+        }
+
+        private string ResolveAvatarPath(string portableAvatarPath)
+        {
+            if (File.Exists(portableAvatarPath)) return portableAvatarPath;
+            try
+            {
+                string scriptDir = Path.GetDirectoryName(scriptPath);
+                string scriptRoot = string.IsNullOrEmpty(scriptDir) ? baseDir : (Path.GetDirectoryName(scriptDir) ?? baseDir);
+                string local = Path.Combine(scriptRoot, "assets", "avatar.jpg");
+                ExtractResourceToFile(AvatarResourceName, local);
+                if (File.Exists(local)) return local;
+            }
+            catch { }
+            try
+            {
+                string fallback = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Firestone2Green",
+                    "assets",
+                    "avatar.jpg"
+                );
+                ExtractResourceToFile(AvatarResourceName, fallback);
+                if (File.Exists(fallback)) return fallback;
+            }
+            catch { }
+            return portableAvatarPath;
         }
 
         private static void ExtractResourceToFile(string resourceName, string targetPath)

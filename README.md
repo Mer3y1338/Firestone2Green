@@ -122,7 +122,9 @@ Firestone2Green_dist.zip
 - `assets/avatar.jpg`
 - `assets/app.ico`
 
-因此在常规使用场景下，用户不需要额外携带 `.ps1` 文件。
+因此在常规使用场景下，用户不需要额外携带 `.ps1` 文件或头像文件。
+
+单独分发 `Firestone2Green.exe` 时，程序首次运行会自动释放内置脚本和默认头像资源；如果目录里没有 `assets/avatar.jpg`，会使用 EXE 内置头像并写入本地运行目录，保证其他用户也能完成左下角登录头像替换。
 
 ## 仓库结构
 
