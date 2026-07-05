@@ -5,6 +5,8 @@
 ![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET-16a34a)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
+[English README](README.en.md)
+
 **Firestone2Green** 是一个面向 Firestone / Overwolf 本地运行环境的 Windows 一键恢复工具，用于完成本地授权、登录头像修复与全功能网络恢复。
 
 - **仓库名**：`Firestone2Green`
@@ -144,6 +146,7 @@ Firestone2Green/
 ├─ .gitattributes
 ├─ .gitignore
 ├─ LICENSE
+├─ README.en.md
 └─ README.md
 ```
 
