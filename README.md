@@ -143,19 +143,6 @@ Firestone2Green/
 └─ README.md
 ```
 
-## 开源说明
-
-GitHub 仓库只保留源码、核心脚本、资源和文档。
-
-以下内容仅作为本地维护 / 发布产物，不纳入 Git 跟踪，也不上传 GitHub：
-
-- `build.ps1`
-- `build.cmd`
-- `dist/`
-- `Firestone2Green_dist.zip`
-
-发布版由维护者在本地构建后放到 GitHub Releases。
-
 ## 常见问题
 
 ### 可以只发送 EXE 给其他用户吗？
