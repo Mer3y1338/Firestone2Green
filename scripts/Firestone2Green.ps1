@@ -909,7 +909,25 @@ async function main(){
   const plan = JSON.parse(__PLAN_JSON_LITERAL__);
   const planJson = JSON.stringify(plan);
   const a = window.adsService;
-  if (!a) return { ok:false, error:'adsService missing', href: location.href, title: document.title };
+
+  function parseMaybeJson(v){
+    if (typeof v !== 'string') return v;
+    try { return JSON.parse(v); } catch(e) { return v; }
+  }
+  function isInactivePlan(v){
+    const x = parseMaybeJson(v);
+    if (!x || x === 'null' || x === 'undefined') return true;
+    if (typeof x === 'string') return x.trim() === '' || x === 'null' || x === 'undefined';
+    if (x.active === false || x.active === 0 || x.cancelled === true) return true;
+    if (x.expireAt || x.expiresAt || x.expirationDate) {
+      const t = Date.parse(x.expireAt || x.expiresAt || x.expirationDate);
+      if (!Number.isNaN(t) && t < Date.now()) return true;
+    }
+    return false;
+  }
+  function normalizePlanValue(v, asString){
+    return isInactivePlan(v) ? (asString ? planJson : plan) : v;
+  }
 
   function patchSubject(subject, mapper, name){
     if (!subject || subject.__fsShieldPatched) return;
@@ -919,57 +937,89 @@ async function main(){
     subject.next = function(v){ return orig(mapper(v)); };
   }
 
-  patchSubject(a.subscriptions?.currentPlan$$, v => (!v || v.active === false ? plan : v), 'subscriptions.currentPlan');
-  patchSubject(a.currentPlan$$, v => (!v || v.active === false ? plan : v), 'ads.currentPlan');
-  patchSubject(a.hasPremiumSub$$, v => (v === false ? true : v), 'ads.hasPremium');
-  patchSubject(a.enablePremiumFeatures$$, v => (v === false ? true : v), 'ads.enablePremium');
+  patchSubject(a?.subscriptions?.currentPlan$$, v => normalizePlanValue(v, false), 'subscriptions.currentPlan');
+  patchSubject(a?.currentPlan$$, v => normalizePlanValue(v, false), 'ads.currentPlan');
+  patchSubject(a?.hasPremiumSub$$, v => (v === false || v === 0 || v == null ? true : v), 'ads.hasPremium');
+  patchSubject(a?.enablePremiumFeatures$$, v => (v === false || v === 0 || v == null ? true : v), 'ads.enablePremium');
+  patchSubject(a?.shouldDisplayAds$$, v => false, 'ads.shouldDisplayAds');
 
-  if (a.subscriptions?.localStorage && !a.subscriptions.localStorage.__fsShieldPatched) {
+  if (a?.subscriptions?.localStorage && !a.subscriptions.localStorage.__fsShieldPatched) {
     const svc = a.subscriptions.localStorage;
-    const origSet = svc.setItem.bind(svc);
+    const origSet = svc.setItem?.bind(svc);
+    const origGet = svc.getItem?.bind(svc);
+    const origRemove = svc.removeItem?.bind(svc);
     Object.defineProperty(svc, '__fsShieldPatched', { value: true, configurable: false });
-    svc.setItem = function(k, v){
-      if (k === 'CURRENT_SUB_PLAN' && (!v || v.active === false)) v = plan;
-      return origSet(k, v);
+    if (origSet) svc.setItem = function(k, v){ return origSet(k, k === 'CURRENT_SUB_PLAN' ? normalizePlanValue(v, false) : v); };
+    if (origGet) svc.getItem = function(k){
+      const v = origGet(k);
+      return k === 'CURRENT_SUB_PLAN' ? normalizePlanValue(v, false) : v;
     };
+    if (origRemove) svc.removeItem = function(k){ if (k === 'CURRENT_SUB_PLAN') return origSet ? origSet(k, plan) : undefined; return origRemove(k); };
   }
 
   if (!window.__fsShieldStoragePatched) {
     const origLSSet = Storage.prototype.setItem;
+    const origLSGet = Storage.prototype.getItem;
+    const origLSRemove = Storage.prototype.removeItem;
+    const origLSClear = Storage.prototype.clear;
     Object.defineProperty(window, '__fsShieldStoragePatched', { value: true, configurable: false });
     Storage.prototype.setItem = function(k, v){
-      if (k === 'CURRENT_SUB_PLAN' && (v == null || v === 'null' || v === '' || v === 'undefined')) v = planJson;
-      return origLSSet.call(this, k, v);
+      return origLSSet.call(this, k, k === 'CURRENT_SUB_PLAN' ? normalizePlanValue(v, true) : v);
     };
+    Storage.prototype.getItem = function(k){
+      const v = origLSGet.call(this, k);
+      return k === 'CURRENT_SUB_PLAN' ? normalizePlanValue(v, true) : v;
+    };
+    Storage.prototype.removeItem = function(k){
+      if (k === 'CURRENT_SUB_PLAN') return origLSSet.call(this, k, planJson);
+      return origLSRemove.call(this, k);
+    };
+    Storage.prototype.clear = function(){
+      const r = origLSClear.call(this);
+      try { origLSSet.call(this, 'CURRENT_SUB_PLAN', planJson); } catch(e) {}
+      return r;
+    };
+  }
+
+  if (a && !a.__fsShieldAdsMethodsPatched) {
+    Object.defineProperty(a, '__fsShieldAdsMethodsPatched', { value: true, configurable: false });
+    try { a.shouldDisplayAdsInternal = async function(){ return false; }; } catch(e) {}
+    try { a.shouldDisplayAds = async function(){ return false; }; } catch(e) {}
+    try { a.hasPremiumSub = function(){ return true; }; } catch(e) {}
+    try { a.enablePremiumFeatures = function(){ return true; }; } catch(e) {}
   }
 
   function apply(){
     try { localStorage.setItem('CURRENT_SUB_PLAN', planJson); } catch(e) {}
-    try { a.subscriptions?.currentPlan$$?.next(plan); } catch(e) {}
-    try { a.currentPlan$$?.next(plan); } catch(e) {}
-    try { a.hasPremiumSub$$?.next(true); } catch(e) {}
-    try { a.enablePremiumFeatures$$?.next(true); } catch(e) {}
-    try { a.applyAuthPremiumHint?.(true); } catch(e) {}
+    try { a?.subscriptions?.currentPlan$$?.next(plan); } catch(e) {}
+    try { a?.currentPlan$$?.next(plan); } catch(e) {}
+    try { a?.hasPremiumSub$$?.next(true); } catch(e) {}
+    try { a?.enablePremiumFeatures$$?.next(true); } catch(e) {}
+    try { a?.shouldDisplayAds$$?.next(false); } catch(e) {}
+    try { a?.applyAuthPremiumHint?.(true); } catch(e) {}
   }
   apply();
-  if (!window.__fsShieldInterval) window.__fsShieldInterval = setInterval(apply, 2000);
+  if (!window.__fsShieldInterval) window.__fsShieldInterval = setInterval(apply, 1000);
   await new Promise(r => setTimeout(r, 100));
   return {
     ok:true,
     href:location.href,
     title:document.title,
-    hasPremium:a.hasPremiumSub$$?.value,
-    enablePremium:a.enablePremiumFeatures$$?.value,
-    currentPlan:a.currentPlan$$?.value,
-    subPlan:a.subscriptions?.currentPlan$$?.value,
+    adsServicePresent:!!a,
+    hasPremium:a ? (a.hasPremiumSub$$?.value === false || a.hasPremiumSub$$?.value === 0 ? true : a.hasPremiumSub$$?.value) : true,
+    enablePremium:a ? (a.enablePremiumFeatures$$?.value === false || a.enablePremiumFeatures$$?.value === 0 ? true : a.enablePremiumFeatures$$?.value) : true,
+    currentPlan:a?.currentPlan$$?.value,
+    subPlan:a?.subscriptions?.currentPlan$$?.value,
     currentSubPlan:localStorage.getItem('CURRENT_SUB_PLAN'),
-    shouldDisplayAds:a.shouldDisplayAdsInternal ? await a.shouldDisplayAdsInternal() : null,
+    shouldDisplayAds:a?.shouldDisplayAdsInternal ? await a.shouldDisplayAdsInternal() : false,
     patched:{
-      sub:!!a.subscriptions?.currentPlan$$?.__fsShieldPatched,
-      plan:!!a.currentPlan$$?.__fsShieldPatched,
-      has:!!a.hasPremiumSub$$?.__fsShieldPatched,
-      enable:!!a.enablePremiumFeatures$$?.__fsShieldPatched,
-      storage:!!a.subscriptions?.localStorage?.__fsShieldPatched,
+      sub:!!a?.subscriptions?.currentPlan$$?.__fsShieldPatched,
+      plan:!!a?.currentPlan$$?.__fsShieldPatched,
+      has:!!a?.hasPremiumSub$$?.__fsShieldPatched,
+      enable:!!a?.enablePremiumFeatures$$?.__fsShieldPatched,
+      serviceStorage:!!a?.subscriptions?.localStorage?.__fsShieldPatched,
+      browserStorage:!!window.__fsShieldStoragePatched,
+      adsMethods:!!a?.__fsShieldAdsMethodsPatched,
       interval:!!window.__fsShieldInterval
     }
   };
@@ -977,28 +1027,56 @@ async function main(){
 '@
   $script = $script.Replace('__PLAN_JSON_LITERAL__', $planJsonLiteral)
 
-  $result = $null
-  $deadline = (Get-Date).AddSeconds(60)
-  do {
-    $result = Invoke-AutomationCommand -Port $Port -CommandId 'executeScript' -CommandArgs @{
-      uid = $AppId
-      script = $script
-      entry = 'main'
-      timeout = 15000
-      entryArgs = '[]'
+  $windowIds = @(
+    $null,
+    "Window_Extension_${AppId}_CollectionWindow",
+    "Window_Extension_${AppId}_MainWindow",
+    "Window_Extension_${AppId}_SettingsWindow",
+    "Window_Extension_${AppId}_LoadingWindow"
+  )
+  $results = New-Object System.Collections.Generic.List[object]
+  $successes = New-Object System.Collections.Generic.List[object]
+  foreach ($windowId in $windowIds) {
+    $result = $null
+    $deadline = (Get-Date).AddSeconds(18)
+    do {
+      $args = @{
+        uid = $AppId
+        script = $script
+        entry = 'main'
+        timeout = 15000
+        entryArgs = '[]'
+      }
+      if (-not [string]::IsNullOrWhiteSpace($windowId)) { $args.windowId = $windowId }
+      $result = Invoke-AutomationCommand -Port $Port -CommandId 'executeScript' -CommandArgs $args
+      if ($result.success -and $result.result.ok) { break }
+      if ($result.result -and $result.result.error -eq 'adsService missing') {
+        Start-Sleep -Seconds 1
+        continue
+      }
+      Start-Sleep -Milliseconds 700
+    } while ((Get-Date) -lt $deadline)
+    $label = if ([string]::IsNullOrWhiteSpace($windowId)) { '(default)' } else { $windowId }
+    $row = [pscustomobject]@{ windowId = $label; result = $result }
+    $results.Add($row)
+    if ($result.success -and $result.result.ok) {
+      $successes.Add($row)
+      Write-Host "授权已注入窗口：$label，hasPremium=$($result.result.hasPremium)，enablePremium=$($result.result.enablePremium)，shouldDisplayAds=$($result.result.shouldDisplayAds)"
     }
-    if ($result.success -and $result.result.ok) { break }
-    if ($result.result.error -eq 'adsService missing') {
-      Start-Sleep -Seconds 2
-      continue
-    }
-    Start-Sleep -Seconds 1
-  } while ((Get-Date) -lt $deadline)
-  Set-State $State 'authResult' $result
-  if (-not $result.success -or -not $result.result.ok) {
-    throw "本地授权注入失败：$($result.error) $($result.result.error)"
   }
-  Write-Host "授权状态：hasPremium=$($result.result.hasPremium), enablePremium=$($result.result.enablePremium), shouldDisplayAds=$($result.result.shouldDisplayAds)"
+  $resultArray = @()
+  foreach ($item in $results) { $resultArray += $item }
+  Set-State $State 'authResults' $resultArray
+  $best = $successes | Where-Object { $_.windowId -like '*CollectionWindow' } | Select-Object -First 1
+  if (-not $best) { $best = $successes | Select-Object -First 1 }
+  if (-not $best) {
+    $last = if ($results.Count -gt 0) { $results[$results.Count - 1].result } else { $null }
+    Set-State $State 'authResult' $last
+    throw "本地授权注入失败：$($last.error) $($last.result.error)"
+  }
+  $result = $best.result
+  Set-State $State 'authResult' $result
+  Write-Host "授权状态：hasPremium=$($result.result.hasPremium), enablePremium=$($result.result.enablePremium), shouldDisplayAds=$($result.result.shouldDisplayAds), windows=$($successes.Count)"
   try {
     Invoke-FirestoneAvatarPatch -State $State -Port $Port -AppId $AppId -ImagePath $AvatarImagePath
   } catch {
@@ -1314,18 +1392,48 @@ function Invoke-Launch {
   Invoke-Monitor -State $State
 }
 
+function Invoke-PrepareLaunchAuth {
+  param([System.Collections.IDictionary]$State)
+  Assert-Admin '启动前校验本地包，并提前恢复全功能数据网络'
+  if (-not $NoKill) { Set-State $State 'stopped' (Stop-OverwolfProcesses) }
+  $backupRoot = New-Directory (Join-Path $ReportDir ('backup_' + (Get-TimeStamp)))
+  $versionRoot = Get-FirestoneVersionRoot -AppId $AppId
+  $versionName = Split-Path -Leaf $versionRoot
+  Set-State $State 'versionRootBefore' $versionRoot
+  Set-State $State 'version' $versionName
+  Set-State $State 'backupRoot' $backupRoot
+
+  $integrity = Test-FirestoneIntegrity -VersionRoot $versionRoot
+  if (-not $integrity.ok) {
+    Restore-FirestoneFromOpk -VersionRoot $versionRoot -AppId $AppId -BackupRoot $backupRoot
+    $versionRoot = Get-FirestoneVersionRoot -AppId $AppId
+    $integrity = Test-FirestoneIntegrity -VersionRoot $versionRoot
+  }
+  Set-State $State 'integrityAfterRestore' $integrity
+  Set-State $State 'removedLeftovers' (Remove-KnownPatchLeftovers -VersionRoot $versionRoot)
+
+  if (-not $SkipCacheQuarantine) {
+    Set-State $State 'quarantinedCaches' (Quarantine-FirestoneCaches -AppId $AppId -BackupRoot $backupRoot)
+  }
+
+  # 关键修复：启动 Firestone 前就切到 AuthOnlyOnline。
+  # 旧流程会先全断网启动，再授权后恢复网络；套牌/环境数据有时会在断网窗口初始化失败。
+  Set-AuthOnlyOnlineNetwork -State $State
+  Set-State $State 'networkMode' 'AuthOnlyOnline'
+}
+
 function Invoke-LaunchAuth {
   param([System.Collections.IDictionary]$State)
-  Assert-Admin '启动前确保阻断规则已应用，并打开本地 automation 接口'
-  $strictApplied = $false
+  Assert-Admin '启动前确保本地包完整，并打开本地 automation 接口'
+  $prepared = $false
   try {
-    Invoke-Apply -State $State
-    $strictApplied = $true
+    Invoke-PrepareLaunchAuth -State $State
+    $prepared = $true
     Start-FirestoneWithAutomation -State $State
   } catch {
-    if ($strictApplied) {
+    if ($prepared) {
       try {
-        Write-Warning '启动/授权流程未完成，正在恢复 AuthOnlyOnline 网络模式，避免停留在全断网状态。'
+        Write-Warning '启动/授权流程未完成，正在恢复 AuthOnlyOnline 网络模式，避免套牌/数据网络停留在异常状态。'
         Set-AuthOnlyOnlineNetwork -State $State
       } catch {
         Write-Warning "网络恢复失败：$($_.Exception.Message)"
@@ -1561,6 +1669,10 @@ try {
 if ($state['error']) { exit 1 }
 if ($state.Contains('ok') -and -not $state['ok']) { exit 2 }
 exit 0
+
+
+
+
 
 
 
