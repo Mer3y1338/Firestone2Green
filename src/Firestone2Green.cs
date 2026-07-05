@@ -96,7 +96,7 @@ namespace Firestone2Green
             root.Padding = new Padding(24, 22, 24, 18);
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
             Controls.Add(root);
 
             root.Controls.Add(BuildHero(), 0, 0);
@@ -111,8 +111,10 @@ namespace Firestone2Green
             main.Controls.Add(BuildLeft(), 0, 0);
             main.Controls.Add(BuildLog(), 1, 0);
 
-            Label footer = L("本地运行 · 不修改 Firestone 签名文件 · 更新后重新执行一次即可", 8.5F, FontStyle.Regular, P.Faint);
+            Label footer = L("本地运行 · 不修改 Firestone 签名文件 · 更新后重新执行一次即可" + Environment.NewLine +
+                             "本程序完全免费，只在 GitHub 上发布；任何付费购买的就是被骗了。如果帮到你，可以的话帮我点一个 Star，这对我很有帮助。", 8.5F, FontStyle.Regular, P.Faint);
             footer.TextAlign = ContentAlignment.MiddleLeft;
+            footer.AutoEllipsis = false;
             root.Controls.Add(footer, 0, 2);
 
             AppendLog("项目目录: " + baseDir);
