@@ -18,9 +18,7 @@
 
 </div>
 
-## 关键词
-
-`Firestone` · `Overwolf` · `Hearthstone Tracker` · `Windows` · `PowerShell` · `WinForms` · `本地授权修复` · `头像修复` · `网络恢复` · `计划任务` · `单文件 EXE`
+## 📺 [视频教程](https://www.bilibili.com/video/BV1uDTy6aEY6 "BiliBili")
 
 ## 功能特性
 
