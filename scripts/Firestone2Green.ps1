@@ -908,7 +908,9 @@ function Invoke-FirestoneRuntimeAuth {
 async function main(){
   const plan = JSON.parse(__PLAN_JSON_LITERAL__);
   const planJson = JSON.stringify(plan);
-  const a = window.adsService;
+  const initialAdsService = window.adsService;
+  function getAdsService(){ return window.adsService || initialAdsService || null; }
+  let a = getAdsService();
 
   function parseMaybeJson(v){
     if (typeof v !== 'string') return v;
@@ -989,7 +991,90 @@ async function main(){
     try { a.enablePremiumFeatures = function(){ return true; }; } catch(e) {}
   }
 
+  function patchAdsService(svc){
+    if (!svc) return;
+    patchSubject(svc?.subscriptions?.currentPlan$$, v => normalizePlanValue(v, false), 'subscriptions.currentPlan');
+    patchSubject(svc?.currentPlan$$, v => normalizePlanValue(v, false), 'ads.currentPlan');
+    patchSubject(svc?.hasPremiumSub$$, v => (v === false || v === 0 || v == null ? true : v), 'ads.hasPremium');
+    patchSubject(svc?.enablePremiumFeatures$$, v => (v === false || v === 0 || v == null ? true : v), 'ads.enablePremium');
+    patchSubject(svc?.shouldDisplayAds$$, v => false, 'ads.shouldDisplayAds');
+    if (svc?.subscriptions?.localStorage && !svc.subscriptions.localStorage.__fsShieldPatched) {
+      const storageSvc = svc.subscriptions.localStorage;
+      const origSet = storageSvc.setItem?.bind(storageSvc);
+      const origGet = storageSvc.getItem?.bind(storageSvc);
+      const origRemove = storageSvc.removeItem?.bind(storageSvc);
+      Object.defineProperty(storageSvc, '__fsShieldPatched', { value: true, configurable: false });
+      if (origSet) storageSvc.setItem = function(k, v){ return origSet(k, k === 'CURRENT_SUB_PLAN' ? normalizePlanValue(v, false) : v); };
+      if (origGet) storageSvc.getItem = function(k){
+        const v = origGet(k);
+        return k === 'CURRENT_SUB_PLAN' ? normalizePlanValue(v, false) : v;
+      };
+      if (origRemove) storageSvc.removeItem = function(k){ if (k === 'CURRENT_SUB_PLAN') return origSet ? origSet(k, plan) : undefined; return origRemove(k); };
+    }
+    if (!svc.__fsShieldAdsMethodsPatched) {
+      Object.defineProperty(svc, '__fsShieldAdsMethodsPatched', { value: true, configurable: false });
+      try { svc.shouldDisplayAdsInternal = async function(){ return false; }; } catch(e) {}
+      try { svc.shouldDisplayAds = async function(){ return false; }; } catch(e) {}
+      try { svc.hasPremiumSub = function(){ return true; }; } catch(e) {}
+      try { svc.enablePremiumFeatures = function(){ return true; }; } catch(e) {}
+    }
+  }
+
+  function patchPremiumDom(){
+    try {
+      if (!document.getElementById('__fsShieldPremiumStyle')) {
+        const style = document.createElement('style');
+        style.id = '__fsShieldPremiumStyle';
+        style.textContent = '.premium-lock{display:none!important}.premium-setting,.premium-setting.locked,.locked{pointer-events:auto!important;opacity:1!important;filter:none!important}.premium-setting.locked{cursor:pointer!important}';
+        document.documentElement.appendChild(style);
+      }
+      document.querySelectorAll('.premium-setting.locked,.locked').forEach(el => { el.classList.remove('locked'); el.classList.add('unlocked'); });
+    } catch(e) {}
+  }
+
+  function patchAngularAds(){
+    const out = { services: 0, premium: 0 };
+    try {
+      if (!window.ng?.getComponent) return out;
+      const seenComponents = new WeakSet();
+      const seenServices = new WeakSet();
+      const nodes = Array.from(document.querySelectorAll('*')).slice(0, 1200);
+      function patchMaybeService(svc){
+        if (!svc || typeof svc !== 'object' || seenServices.has(svc)) return;
+        if (!svc.hasPremiumSub$$ && !svc.enablePremiumFeatures$$ && !svc.currentPlan$$) return;
+        seenServices.add(svc);
+        out.services++;
+        try { patchAdsService(svc); } catch(e) {}
+        try { svc.currentPlan$$?.next(plan); } catch(e) {}
+        try { svc.hasPremiumSub$$?.next(true); } catch(e) {}
+        try { svc.enablePremiumFeatures$$?.next(true); } catch(e) {}
+        if (svc.hasPremiumSub$$?.value === true || svc.enablePremiumFeatures$$?.value === true) out.premium++;
+      }
+      function patchComponent(cmp){
+        if (!cmp || typeof cmp !== 'object' || seenComponents.has(cmp)) return;
+        seenComponents.add(cmp);
+        patchMaybeService(cmp);
+        patchMaybeService(cmp.ads);
+        patchMaybeService(cmp.adsService);
+        patchMaybeService(cmp.adService);
+        try { cmp.premium$$?.next(true); } catch(e) {}
+        try { cmp.hasPremiumAccess$$?.next(true); } catch(e) {}
+        try { cmp.isPremium$$?.next(true); } catch(e) {}
+        try { cmp.cdr?.markForCheck?.(); } catch(e) {}
+      }
+      for (const node of nodes) {
+        try { patchComponent(window.ng.getComponent(node)); } catch(e) {}
+        try { patchComponent(window.ng.getOwningComponent?.(node)); } catch(e) {}
+      }
+    } catch(e) {}
+    return out;
+  }
+
   function apply(){
+    a = getAdsService();
+    try { patchAdsService(a); } catch(e) {}
+    try { patchPremiumDom(); } catch(e) {}
+    try { window.__fsShieldAngularPatch = patchAngularAds(); } catch(e) {}
     try { localStorage.setItem('CURRENT_SUB_PLAN', planJson); } catch(e) {}
     try { a?.subscriptions?.currentPlan$$?.next(plan); } catch(e) {}
     try { a?.currentPlan$$?.next(plan); } catch(e) {}
@@ -1001,13 +1086,20 @@ async function main(){
   apply();
   if (!window.__fsShieldInterval) window.__fsShieldInterval = setInterval(apply, 1000);
   await new Promise(r => setTimeout(r, 100));
+  a = getAdsService();
+  const angularPatch = window.__fsShieldAngularPatch || { services: 0, premium: 0 };
+  const hasPremiumValue = a ? (a.hasPremiumSub$$?.value === false || a.hasPremiumSub$$?.value === 0 ? true : a.hasPremiumSub$$?.value) : null;
+  const enablePremiumValue = a ? (a.enablePremiumFeatures$$?.value === false || a.enablePremiumFeatures$$?.value === 0 ? true : a.enablePremiumFeatures$$?.value) : null;
+  const authEffective = (hasPremiumValue === true && enablePremiumValue === true) || angularPatch.premium > 0;
   return {
     ok:true,
     href:location.href,
     title:document.title,
     adsServicePresent:!!a,
-    hasPremium:a ? (a.hasPremiumSub$$?.value === false || a.hasPremiumSub$$?.value === 0 ? true : a.hasPremiumSub$$?.value) : true,
-    enablePremium:a ? (a.enablePremiumFeatures$$?.value === false || a.enablePremiumFeatures$$?.value === 0 ? true : a.enablePremiumFeatures$$?.value) : true,
+    authEffective,
+    angularPatch,
+    hasPremium:hasPremiumValue,
+    enablePremium:enablePremiumValue,
     currentPlan:a?.currentPlan$$?.value,
     subPlan:a?.subscriptions?.currentPlan$$?.value,
     currentSubPlan:localStorage.getItem('CURRENT_SUB_PLAN'),
@@ -1038,7 +1130,8 @@ async function main(){
   $successes = New-Object System.Collections.Generic.List[object]
   foreach ($windowId in $windowIds) {
     $result = $null
-    $deadline = (Get-Date).AddSeconds(18)
+    $windowTimeoutSeconds = if ([string]::IsNullOrWhiteSpace($windowId)) { 75 } else { 30 }
+    $deadline = (Get-Date).AddSeconds($windowTimeoutSeconds)
     do {
       $args = @{
         uid = $AppId
@@ -1049,7 +1142,12 @@ async function main(){
       }
       if (-not [string]::IsNullOrWhiteSpace($windowId)) { $args.windowId = $windowId }
       $result = Invoke-AutomationCommand -Port $Port -CommandId 'executeScript' -CommandArgs $args
-      if ($result.success -and $result.result.ok) { break }
+      if ($result.success -and $result.result.ok -and $result.result.authEffective) { break }
+      if ($result.success -and $result.result.ok -and -not $result.result.authEffective) {
+        Start-Sleep -Seconds 1
+        continue
+      }
+      if ((-not $result.success) -and ([string]$result.error -match "window .+doesn.+t exist")) { break }
       if ($result.result -and $result.result.error -eq 'adsService missing') {
         Start-Sleep -Seconds 1
         continue
@@ -1059,15 +1157,19 @@ async function main(){
     $label = if ([string]::IsNullOrWhiteSpace($windowId)) { '(default)' } else { $windowId }
     $row = [pscustomobject]@{ windowId = $label; result = $result }
     $results.Add($row)
-    if ($result.success -and $result.result.ok) {
+    if ($result.success -and $result.result.ok -and $result.result.authEffective) {
       $successes.Add($row)
-      Write-Host "授权已注入窗口：$label，hasPremium=$($result.result.hasPremium)，enablePremium=$($result.result.enablePremium)，shouldDisplayAds=$($result.result.shouldDisplayAds)"
+      Write-Host "授权已注入窗口：$label，hasPremium=$($result.result.hasPremium)，enablePremium=$($result.result.enablePremium)，shouldDisplayAds=$($result.result.shouldDisplayAds)，angular=$($result.result.angularPatch.premium)"
+    } elseif ($result.success -and $result.result.ok) {
+      Write-Host "窗口已注入基础缓存但授权服务尚未就绪：$label"
     }
   }
   $resultArray = @()
   foreach ($item in $results) { $resultArray += $item }
   Set-State $State 'authResults' $resultArray
-  $best = $successes | Where-Object { $_.windowId -like '*CollectionWindow' } | Select-Object -First 1
+  $best = $successes | Where-Object { $_.result.result.adsServicePresent -and $_.result.result.patched.has -and $_.result.result.patched.enable } | Select-Object -First 1
+  if (-not $best) { $best = $successes | Where-Object { $_.result.result.angularPatch.premium -gt 0 } | Select-Object -First 1 }
+  if (-not $best) { $best = $successes | Where-Object { $_.windowId -like '*CollectionWindow' } | Select-Object -First 1 }
   if (-not $best) { $best = $successes | Select-Object -First 1 }
   if (-not $best) {
     $last = if ($results.Count -gt 0) { $results[$results.Count - 1].result } else { $null }
@@ -1370,7 +1472,6 @@ function Start-FirestoneWithAutomation {
   Start-Process -FilePath $launcher -ArgumentList @('--launchapp', $AppId, '--origin', 'desktop', '--automation', "$AutomationPort", '--enable-automation')
   Wait-AutomationServer -Port $AutomationPort -TimeoutSeconds 45 | Out-Null
   Start-Sleep -Seconds 3
-  Invoke-FirestoneRuntimeAuth -State $State -Port $AutomationPort -AppId $AppId -PlanId $AuthPlanId
   Set-AuthOnlyOnlineNetwork -State $State
   Invoke-FirestoneRuntimeAuth -State $State -Port $AutomationPort -AppId $AppId -PlanId $AuthPlanId
   Set-State $State 'networkMode' 'AuthOnlyOnline'
@@ -1685,5 +1786,8 @@ try {
 if ($state['error']) { exit 1 }
 if ($state.Contains('ok') -and -not $state['ok']) { exit 2 }
 exit 0
+
+
+
 
 
