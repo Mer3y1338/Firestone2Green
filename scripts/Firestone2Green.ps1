@@ -17,7 +17,7 @@ No internet access is used by this script.
 
 [CmdletBinding()]
 param(
-  [ValidateSet('Apply','Verify','Restore','Monitor','Launch','Auth','LaunchAuth','AutoAuth','DataOnline','AuthOnlyOnline','InstallTask','InstallDataOnlineTask','InstallAuthOnlyOnlineTask','InstallAutoAuthTask','RemoveTask','All')]
+  [ValidateSet('Apply','Verify','Restore','Monitor','Launch','Auth','LaunchAuth','AutoAuth','WatchFirestone','DataOnline','AuthOnlyOnline','InstallTask','InstallDataOnlineTask','InstallAuthOnlyOnlineTask','InstallAutoAuthTask','RemoveTask','All')]
   [string]$Mode = 'Apply',
 
   [string]$AppId = 'lnknbakkpommmjjdnelmfbjjdbocfpnpbkijjnob',
@@ -116,18 +116,30 @@ function Assert-PathUnderRoot([string]$Path, [string]$Root) {
 
 function Stop-OverwolfProcesses {
   Write-Step '停止 Overwolf/Firestone 进程'
-  $procs = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.ProcessName -like '*Overwolf*' -or
-    $_.ProcessName -like 'ow-*' -or
-    $_.ProcessName -like '*Firestone*'
-  }
-  if (-not $procs) {
+  $protectedIds = New-Object 'System.Collections.Generic.HashSet[int]'
+  [void]$protectedIds.Add([int]$PID)
+  try {
+    $selfProc = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
+    if ($selfProc -and $selfProc.ParentProcessId) { [void]$protectedIds.Add([int]$selfProc.ParentProcessId) }
+  } catch {}
+  $targets = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    if ($protectedIds.Contains([int]$_.ProcessId)) { return $false }
+    $name = [IO.Path]::GetFileNameWithoutExtension([string]$_.Name)
+    $cmd = [string]$_.CommandLine
+    if ($name -eq 'Firestone2Green') { return $false }
+    ($name -like '*Overwolf*') -or
+    ($name -like 'ow-*') -or
+    ($cmd -like '*Firestone - *')
+  })
+  if (-not $targets) {
     Write-Host '未发现运行中的 Overwolf/Firestone 进程。'
     return @()
   }
-  $snapshot = $procs | Select-Object Id, ProcessName, Path
+  $snapshot = $targets | Select-Object @{n='Id';e={$_.ProcessId}}, @{n='ProcessName';e={[IO.Path]::GetFileNameWithoutExtension([string]$_.Name)}}, @{n='Path';e={$_.ExecutablePath}}
   $snapshot | Format-Table -AutoSize | Out-Host
-  $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+  foreach ($target in $targets) {
+    Stop-Process -Id $target.ProcessId -Force -ErrorAction SilentlyContinue
+  }
   Start-Sleep -Seconds 2
   return $snapshot
 }
@@ -597,14 +609,22 @@ function Install-ShieldTask {
   if (-not $script) { throw '无法确定当前脚本路径，不能安装计划任务。' }
   $actionArgs = "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Mode $TaskMode -AutomationPort $AutomationPort -SkipCacheQuarantine"
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
-  $triggers = @(
-    (New-ScheduledTaskTrigger -AtLogOn),
-    (New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650))
-  )
+  if ($TaskMode -eq 'WatchFirestone') {
+    $triggers = @((New-ScheduledTaskTrigger -AtLogOn))
+  } else {
+    $triggers = @(
+      (New-ScheduledTaskTrigger -AtLogOn),
+      (New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650))
+    )
+  }
   $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -RunLevel Highest -LogonType Interactive
-  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Days 3650)
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
-  Write-Host '计划任务已安装。'
+  if ($TaskMode -eq 'WatchFirestone') {
+    Write-Host '启动事件监听任务已安装。'
+  } else {
+    Write-Host '计划任务已安装。'
+  }
 }
 
 function Install-LaunchTask {
@@ -665,6 +685,7 @@ function Remove-ShieldTask {
   param([string]$TaskName)
   Write-Step "删除计划任务：$TaskName"
   if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     Write-Host '计划任务已删除。'
   } else {
@@ -672,6 +693,7 @@ function Remove-ShieldTask {
   }
   $launchTaskName = "$TaskName Launch"
   if (Get-ScheduledTask -TaskName $launchTaskName -ErrorAction SilentlyContinue) {
+    try { Stop-ScheduledTask -TaskName $launchTaskName -ErrorAction SilentlyContinue } catch {}
     Unregister-ScheduledTask -TaskName $launchTaskName -Confirm:$false
     Write-Host "静默启动任务已删除：$launchTaskName"
   }
@@ -1239,8 +1261,12 @@ function Get-FirestoneAppProcesses {
   $rows = @()
   try {
     $rows = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-      ($_.Name -like '*Firestone*') -or
-      ($_.CommandLine -and ($_.CommandLine -like "*$AppId*" -or $_.CommandLine -like '*Firestone*'))
+      $name = [IO.Path]::GetFileNameWithoutExtension([string]$_.Name)
+      $cmd = [string]$_.CommandLine
+      if ($name -eq 'Firestone2Green') { return $false }
+      $isOverwolfProcess = ($name -like '*Overwolf*' -or $name -like 'ow-*')
+      $isFirestoneProcess = ($cmd -like "*$AppId*" -or $cmd -like '*Firestone - *')
+      $isOverwolfProcess -and $isFirestoneProcess
     } | Select-Object ProcessId, Name, CommandLine)
   } catch {
     $rows = @()
@@ -1291,8 +1317,22 @@ function Invoke-Launch {
 function Invoke-LaunchAuth {
   param([System.Collections.IDictionary]$State)
   Assert-Admin '启动前确保阻断规则已应用，并打开本地 automation 接口'
-  Invoke-Apply -State $State
-  Start-FirestoneWithAutomation -State $State
+  $strictApplied = $false
+  try {
+    Invoke-Apply -State $State
+    $strictApplied = $true
+    Start-FirestoneWithAutomation -State $State
+  } catch {
+    if ($strictApplied) {
+      try {
+        Write-Warning '启动/授权流程未完成，正在恢复 AuthOnlyOnline 网络模式，避免停留在全断网状态。'
+        Set-AuthOnlyOnlineNetwork -State $State
+      } catch {
+        Write-Warning "网络恢复失败：$($_.Exception.Message)"
+      }
+    }
+    throw
+  }
 }
 
 function Invoke-AutoAuth {
@@ -1316,6 +1356,97 @@ function Invoke-AutoAuth {
     } else {
       Write-Host "持续修复：网络规则已维持；当前 Firestone 未运行或 automation 端口不可用。下次启动后会自动检查并补授权。"
     }
+  }
+}
+
+function Test-FirestoneStartupEvent {
+  param(
+    [int]$ProcessId,
+    [string]$ProcessName,
+    [string]$AppId
+  )
+  if ([string]::IsNullOrWhiteSpace($ProcessName)) { return $false }
+  if ($ProcessName -ieq 'Firestone2Green.exe') { return $false }
+  if ($ProcessName -notin @('Overwolf.exe','OverwolfLauncher.exe','OverwolfBrowser.exe')) { return $false }
+  Start-Sleep -Milliseconds 700
+  try {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    if ($proc) {
+      $cmd = [string]$proc.CommandLine
+      if ($cmd -like "*$AppId*" -or $cmd -like '*Firestone - *') { return $true }
+    }
+  } catch {}
+  $runningFirestone = @(Get-FirestoneAppProcesses -AppId $AppId)
+  return ($runningFirestone.Count -gt 0)
+}
+
+function Invoke-WatchAuthOnce {
+  param(
+    [System.Collections.IDictionary]$State,
+    [string]$Reason
+  )
+  if ($Script:FirestoneWatchBusy) { return }
+  $now = Get-Date
+  if ($Script:FirestoneWatchLastAttempt -and (($now - $Script:FirestoneWatchLastAttempt).TotalSeconds -lt 20)) {
+    return
+  }
+  $Script:FirestoneWatchBusy = $true
+  $Script:FirestoneWatchLastAttempt = $now
+  try {
+    Write-Step "检测到 Firestone 启动：$Reason"
+    Invoke-AutoAuth -State $State
+  } catch {
+    Set-State $State 'lastWatchError' $_.Exception.Message
+    Write-Warning "事件授权失败：$($_.Exception.Message)"
+    try {
+      Set-AuthOnlyOnlineNetwork -State $State
+    } catch {
+      Write-Warning "事件失败后的网络恢复失败：$($_.Exception.Message)"
+    }
+  } finally {
+    $Script:FirestoneWatchBusy = $false
+  }
+}
+
+function Invoke-WatchFirestoneStartup {
+  param([System.Collections.IDictionary]$State)
+  Assert-Admin '持续修复事件监听需要最高权限'
+  Set-State $State 'watchMode' 'WmiProcessStartTrace'
+  Set-State $State 'watchStartedAt' ((Get-Date).ToString('o'))
+  try {
+    Invoke-AutoAuth -State $State
+  } catch {
+    Set-State $State 'initialWatchAuthError' $_.Exception.Message
+    Write-Warning "启动监听前的初始授权检查失败：$($_.Exception.Message)"
+    try { Set-AuthOnlyOnlineNetwork -State $State } catch {}
+  }
+
+  $source = 'Firestone2GreenProcessStart'
+  try { Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue } catch {}
+  try { Remove-Event -SourceIdentifier $source -ErrorAction SilentlyContinue } catch {}
+  $query = "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'Overwolf.exe' OR ProcessName = 'OverwolfLauncher.exe' OR ProcessName = 'OverwolfBrowser.exe'"
+  Register-WmiEvent -Query $query -SourceIdentifier $source | Out-Null
+  Write-Host '已进入 Firestone 启动事件监听模式：检测到启动后立即静默补授权，不再按固定时间轮询。'
+  try {
+    while ($true) {
+      $evt = Wait-Event -SourceIdentifier $source -Timeout 3600
+      if (-not $evt) { continue }
+      try {
+        $eventProcess = $evt.SourceEventArgs.NewEvent
+        $pid = [int]$eventProcess.ProcessID
+        $pname = [string]$eventProcess.ProcessName
+        Remove-Event -EventIdentifier $evt.EventIdentifier -ErrorAction SilentlyContinue
+        if (Test-FirestoneStartupEvent -ProcessId $pid -ProcessName $pname -AppId $AppId) {
+          Invoke-WatchAuthOnce -State $State -Reason "$pname/$pid"
+        }
+      } catch {
+        Set-State $State 'lastWatchLoopError' $_.Exception.Message
+        Write-Warning "事件处理失败：$($_.Exception.Message)"
+      }
+    }
+  } finally {
+    try { Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue } catch {}
+    try { Remove-Event -SourceIdentifier $source -ErrorAction SilentlyContinue } catch {}
   }
 }
 
@@ -1362,6 +1493,9 @@ try {
     'AutoAuth' {
       Invoke-AutoAuth -State $state
     }
+    'WatchFirestone' {
+      Invoke-WatchFirestoneStartup -State $state
+    }
     'DataOnline' {
       Set-DataOnlineNetwork -State $state
       Invoke-Verify -State $state
@@ -1389,11 +1523,11 @@ try {
     }
     'InstallAutoAuthTask' {
       Assert-Admin '安装 Firestone2Green 持续授权修复'
-      Install-ShieldTask -TaskName $TaskName -TaskMode 'AutoAuth'
+      Install-ShieldTask -TaskName $TaskName -TaskMode 'WatchFirestone'
       Set-State $state 'launchTask' (Install-LaunchTask -TaskName $TaskName)
       Set-State $state 'launchShortcut' (Install-LaunchShortcut -TaskName $TaskName)
       Set-State $state 'networkMode' 'AuthOnlyOnline'
-      Write-Host '持续修复已安装，正在立即重启 Firestone 并完成本次静默授权。'
+      Write-Host '持续修复已安装：已改为 Firestone 启动事件监听，不再按固定时间轮询。正在立即重启 Firestone 并完成本次静默授权。'
       Invoke-LaunchAuth -State $state
     }
     'RemoveTask' {
@@ -1427,5 +1561,7 @@ try {
 if ($state['error']) { exit 1 }
 if ($state.Contains('ok') -and -not $state['ok']) { exit 2 }
 exit 0
+
+
 
 
