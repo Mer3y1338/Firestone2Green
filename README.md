@@ -18,7 +18,7 @@
 
 </div>
 
-## 📺 [视频教程](https://www.bilibili.com/video/BV1uDTy6aEY6 "BiliBili")
+### 📺 [视频教程](https://www.bilibili.com/video/BV1uDTy6aEY6 "BiliBili")
 
 ## 功能特性
 
