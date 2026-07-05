@@ -117,7 +117,7 @@ namespace Firestone2Green
 
             AppendLog("项目目录: " + baseDir);
             AppendLog("脚本路径: " + scriptPath);
-            AppendLog("推荐流程：首次点击“一键重启并授权”；需要持久化时点击“安装持续修复”，以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
+            AppendLog("推荐流程：首次点击“一键重启并授权”；需要持久化时点击“安装持续修复”（只安装监听，不会主动启动 Firestone），以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
         }
 
         protected override void OnResizeBegin(EventArgs e)

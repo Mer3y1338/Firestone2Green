@@ -1635,9 +1635,24 @@ try {
       Install-ShieldTask -TaskName $TaskName -TaskMode 'WatchFirestone'
       Set-State $state 'launchTask' (Install-LaunchTask -TaskName $TaskName)
       Set-State $state 'launchShortcut' (Install-LaunchShortcut -TaskName $TaskName)
+      Set-AuthOnlyOnlineNetwork -State $state
       Set-State $state 'networkMode' 'AuthOnlyOnline'
-      Write-Host '持续修复已安装：已改为 Firestone 启动事件监听，不再按固定时间轮询。正在立即重启 Firestone 并完成本次静默授权。'
-      Invoke-LaunchAuth -State $state
+      try {
+        $watchTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ($watchTask.State -eq 'Running') {
+          Set-State $state 'watchTaskStarted' $true
+          Set-State $state 'watchTaskAlreadyRunning' $true
+        } else {
+          Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+          Set-State $state 'watchTaskStarted' $true
+          Set-State $state 'watchTaskAlreadyRunning' $false
+        }
+      } catch {
+        Set-State $state 'watchTaskStarted' $false
+        Set-State $state 'watchTaskStartError' $_.Exception.Message
+      }
+      Write-Host '持续修复已安装：已改为 Firestone 启动事件监听，不再按固定时间轮询，也不会主动启动 Firestone。需要立即授权时请点击“一键重启并授权”，以后建议使用桌面“Firestone2Green 启动 Firestone”快捷方式。'
+      Invoke-Verify -State $state
     }
     'RemoveTask' {
       Assert-Admin '删除计划任务'
@@ -1670,12 +1685,5 @@ try {
 if ($state['error']) { exit 1 }
 if ($state.Contains('ok') -and -not $state['ok']) { exit 2 }
 exit 0
-
-
-
-
-
-
-
 
 
