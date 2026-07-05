@@ -1,33 +1,26 @@
 # Firestone2Green
 
-![Platform](https://img.shields.io/badge/platform-Windows-blue)
-![UI](https://img.shields.io/badge/UI-WinForms-7c3aed)
-![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET-16a34a)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+<div align="center">
 
-[English README](README.en.md)
+![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)
+![UI](https://img.shields.io/badge/UI-WinForms-7c3aed?style=flat-square)
+![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET-16a34a?style=flat-square)
+[![Release](https://img.shields.io/github/v/release/Mer3y1338/Firestone2Green?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Mer3y1338/Firestone2Green/total?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/pulls)
 
-**Firestone2Green** 是一个面向 Firestone / Overwolf 本地运行环境的 Windows 一键恢复工具，用于完成本地授权、登录头像修复与全功能网络恢复。
+**Firestone2Green** 是一个面向 **Firestone / Overwolf / Hearthstone Tracker** 的 Windows 一键本地恢复工具。
 
-- **仓库名**：`Firestone2Green`
-- **程序名**：`Firestone2Green`
-- **窗口标题**：`Firestone2Green By Mer3y`
-- **程序副标题**：`本地授权 By Mer3y`
+一键完成 **本地授权修复、左下角登录头像修复、全功能网络恢复、静默持续修复任务安装**，适合需要快速恢复 Firestone 本地运行环境的普通用户。
 
-> [!NOTE]
-> Release 附件中的 `Firestone2Green.exe` 是单文件版本，已经内置 PowerShell 核心脚本、默认头像资源和程序图标。普通用户只需要运行这个 EXE。
+[⬇️ 下载最新版 Firestone2Green.exe](https://github.com/Mer3y1338/Firestone2Green/releases/latest) · [English README](README.en.md) · [使用教程](docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md)
 
-## 目录
+</div>
 
-- [功能特性](#功能特性)
-- [快速开始](#快速开始)
-- [持续修复](#持续修复)
-- [快捷方式自动授权流程](#快捷方式自动授权流程)
-- [发布文件](#发布文件)
-- [仓库结构](#仓库结构)
-- [开源说明](#开源说明)
-- [常见问题](#常见问题)
-- [许可证](#许可证)
+## 关键词
+
+`Firestone` · `Overwolf` · `Hearthstone Tracker` · `Windows` · `PowerShell` · `WinForms` · `本地授权修复` · `头像修复` · `网络恢复` · `计划任务` · `单文件 EXE`
 
 ## 功能特性
 

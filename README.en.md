@@ -1,33 +1,26 @@
 # Firestone2Green
 
-![Platform](https://img.shields.io/badge/platform-Windows-blue)
-![UI](https://img.shields.io/badge/UI-WinForms-7c3aed)
-![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET-16a34a)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+<div align="center">
 
-[中文说明](README.md)
+![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)
+![UI](https://img.shields.io/badge/UI-WinForms-7c3aed?style=flat-square)
+![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET-16a34a?style=flat-square)
+[![Release](https://img.shields.io/github/v/release/Mer3y1338/Firestone2Green?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Mer3y1338/Firestone2Green/total?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/pulls)
 
-**Firestone2Green** is a Windows one-click local recovery tool for the Firestone / Overwolf runtime environment. It helps restore local authorization state, repair the login avatar, and recover full network functionality.
+**Firestone2Green** is a Windows one-click local recovery utility for **Firestone / Overwolf / Hearthstone Tracker**.
 
-- **Repository**: `Firestone2Green`
-- **Program**: `Firestone2Green`
-- **Window title**: `Firestone2Green By Mer3y`
-- **Subtitle**: `本地授权 By Mer3y`
+It helps restore **local authorization, the bottom-left login avatar, full network access, and silent scheduled-task maintenance** for users who need to quickly repair their Firestone local runtime environment.
 
-> [!NOTE]
-> The `Firestone2Green.exe` file attached to GitHub Releases is a single-file build. It already includes the PowerShell core script, the default avatar resource, and the application icon. Regular users only need to run this EXE.
+[⬇️ Download the latest Firestone2Green.exe](https://github.com/Mer3y1338/Firestone2Green/releases/latest) · [中文说明](README.md) · [User Guide](docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md)
 
-## Table of Contents
+</div>
 
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Persistent Repair](#persistent-repair)
-- [Shortcut Auto-Authorization Flow](#shortcut-auto-authorization-flow)
-- [Release Files](#release-files)
-- [Repository Layout](#repository-layout)
-- [Open Source Notes](#open-source-notes)
-- [FAQ](#faq)
-- [License](#license)
+## Keywords
+
+`Firestone` · `Overwolf` · `Hearthstone Tracker` · `Windows` · `PowerShell` · `WinForms` · `local authorization repair` · `avatar repair` · `network restore` · `scheduled task` · `single-file EXE`
 
 ## Features
 
