@@ -1475,17 +1475,18 @@ function Test-FirestoneStartupEvent {
   )
   if ([string]::IsNullOrWhiteSpace($ProcessName)) { return $false }
   if ($ProcessName -ieq 'Firestone2Green.exe') { return $false }
-  if ($ProcessName -notin @('Overwolf.exe','OverwolfLauncher.exe','OverwolfBrowser.exe')) { return $false }
-  Start-Sleep -Milliseconds 700
+  if ($ProcessName -notin @('Overwolf.exe','OverwolfLauncher.exe')) { return $false }
+  Start-Sleep -Milliseconds 500
   try {
     $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
     if ($proc) {
       $cmd = [string]$proc.CommandLine
-      if ($cmd -like "*$AppId*" -or $cmd -like '*Firestone - *') { return $true }
+      if ($cmd -like '*--automation*' -or $cmd -like '*--enable-automation*') { return $false }
+      $isLaunchCommand = ($cmd -match '(?i)(^|\\s)-{1,2}launchapp(\\s|=)') -or ($cmd -like '*-from-desktop*') -or ($cmd -like '*--origin desktop*')
+      if (($cmd -like "*$AppId*") -and $isLaunchCommand) { return $true }
     }
   } catch {}
-  $runningFirestone = @(Get-FirestoneAppProcesses -AppId $AppId)
-  return ($runningFirestone.Count -gt 0)
+  return $false
 }
 
 function Invoke-WatchAuthOnce {
@@ -1522,19 +1523,19 @@ function Invoke-WatchFirestoneStartup {
   Set-State $State 'watchMode' 'WmiProcessStartTrace'
   Set-State $State 'watchStartedAt' ((Get-Date).ToString('o'))
   try {
-    Invoke-AutoAuth -State $State
+    Set-AuthOnlyOnlineNetwork -State $State
+    Set-State $State 'networkMode' 'AuthOnlyOnline'
   } catch {
-    Set-State $State 'initialWatchAuthError' $_.Exception.Message
-    Write-Warning "启动监听前的初始授权检查失败：$($_.Exception.Message)"
-    try { Set-AuthOnlyOnlineNetwork -State $State } catch {}
+    Set-State $State 'initialNetworkError' $_.Exception.Message
+    Write-Warning "启动监听前的网络模式初始化失败：$($_.Exception.Message)"
   }
 
   $source = 'Firestone2GreenProcessStart'
   try { Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue } catch {}
   try { Remove-Event -SourceIdentifier $source -ErrorAction SilentlyContinue } catch {}
-  $query = "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'Overwolf.exe' OR ProcessName = 'OverwolfLauncher.exe' OR ProcessName = 'OverwolfBrowser.exe'"
+  $query = "SELECT * FROM Win32_ProcessStartTrace WHERE ProcessName = 'Overwolf.exe' OR ProcessName = 'OverwolfLauncher.exe'"
   Register-WmiEvent -Query $query -SourceIdentifier $source | Out-Null
-  Write-Host '已进入 Firestone 启动事件监听模式：检测到启动后立即静默补授权，不再按固定时间轮询。'
+  Write-Host '已进入 Firestone 手动启动事件监听模式：只有检测到 -launchapp 启动 Firestone 时才会静默补授权，不会主动拉起 Firestone。'
   try {
     while ($true) {
       $evt = Wait-Event -SourceIdentifier $source -Timeout 3600
@@ -1669,6 +1670,7 @@ try {
 if ($state['error']) { exit 1 }
 if ($state.Contains('ok') -and -not $state['ok']) { exit 2 }
 exit 0
+
 
 
 

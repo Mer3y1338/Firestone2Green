@@ -59,7 +59,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 
 | 名称 | 类型 | 作用 |
 | --- | --- | --- |
-| `Firestone2Green` | 后台事件监听任务 | 登录后常驻监听 Firestone / Overwolf 启动事件；检测到 Firestone 启动后立即静默补授权，不再按固定时间轮询。 |
+| `Firestone2Green` | 后台事件监听任务 | 登录后常驻监听 Firestone 手动启动事件；只有检测到 `-launchapp` 启动 Firestone 时才会静默补授权，不会主动拉起 Firestone。 |
 | `Firestone2Green Launch` | 后台按需任务 | 由桌面快捷方式触发，静默启动 Firestone 并完成授权、头像修复和网络恢复。 |
 | `Firestone2Green 启动 Firestone.lnk` | 桌面快捷方式 | 普通用户日常启动 Firestone 的入口。 |
 | `%LOCALAPPDATA%\Firestone2Green\LaunchFirestone2Green.vbs` | 隐藏启动脚本 | 负责无窗口触发后台按需任务。 |
@@ -70,7 +70,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 - 不弹授权完成提示。
 - 不弹额外确认窗口。
 - 重启电脑后仍可通过启动事件监听自动维持本地授权。
-- 如果用原始 Firestone 图标启动且未开启 automation，后台事件监听检测到后会自动静默重启并补授权。
+- 如果用原始 Firestone 图标手动启动且未开启 automation，后台事件监听检测到后会自动静默重启并补授权；不会在你未启动 Firestone 时主动拉起。
 
 ## 发布文件
 
@@ -136,7 +136,7 @@ GitHub 仓库只保留源码、核心脚本、资源和文档。
 
 ### 重启电脑后还需要手动授权吗？
 
-安装 **持续修复** 后不需要每次手动打开 GUI。推荐重启后使用桌面的 **Firestone2Green 启动 Firestone** 快捷方式。如果使用原始图标启动，后台事件监听也会在检测到 Firestone 启动后立即静默重启补授权。
+安装 **持续修复** 后不需要每次手动打开 GUI。推荐重启后使用桌面的 **Firestone2Green 启动 Firestone** 快捷方式。如果使用原始图标手动启动，后台事件监听也会在检测到 `-launchapp` 后立即静默重启补授权；不会在你未启动时主动拉起。
 
 ### 完成授权后会弹窗吗？
 
