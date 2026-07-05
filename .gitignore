@@ -1,0 +1,46 @@
+# build output
+/build.ps1
+/build.cmd
+/dist/
+/Firestone2Green_dist.zip
+*.exe
+*.zip
+*.msi
+*.nupkg
+
+# local reports and runtime extraction
+/scripts/FirestoneOfflineReports/
+FirestoneOfflineReports/
+*.log
+*.tmp
+
+# local visual QA screenshots
+preview_*.png
+audit_*.png
+
+# local scratch/test folders
+/single-test/
+/tmp/
+/temp/
+
+# IDE/editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# .NET/C# build intermediates
+bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
