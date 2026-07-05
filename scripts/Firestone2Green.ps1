@@ -1741,13 +1741,17 @@ try {
       try {
         $watchTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
         if ($watchTask.State -eq 'Running') {
-          Set-State $state 'watchTaskStarted' $true
-          Set-State $state 'watchTaskAlreadyRunning' $true
-        } else {
-          Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-          Set-State $state 'watchTaskStarted' $true
-          Set-State $state 'watchTaskAlreadyRunning' $false
+          Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+          $deadline = (Get-Date).AddSeconds(8)
+          do {
+            Start-Sleep -Milliseconds 250
+            $watchTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+          } while ($watchTask.State -eq 'Running' -and (Get-Date) -lt $deadline)
+          Set-State $state 'watchTaskWasRunning' $true
         }
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        Set-State $state 'watchTaskStarted' $true
+        Set-State $state 'watchTaskRestarted' $true
       } catch {
         Set-State $state 'watchTaskStarted' $false
         Set-State $state 'watchTaskStartError' $_.Exception.Message
@@ -1786,4 +1790,3 @@ try {
 if ($state['error']) { exit 1 }
 if ($state.Contains('ok') -and -not $state['ok']) { exit 2 }
 exit 0
-
