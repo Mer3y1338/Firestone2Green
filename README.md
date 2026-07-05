@@ -200,3 +200,6 @@ NetworkMode = AuthOnlyOnline
 ## 许可证
 
 本项目使用 [MIT License](LICENSE)。
+
+## 友链
+【感谢Linux.do社区及GitHub社区各位开发者对项目的支持与贡献】
