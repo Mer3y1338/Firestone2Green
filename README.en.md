@@ -33,6 +33,7 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 - **Silent persistent repair**: Can install scheduled tasks to automatically refresh authorization after Windows restarts or Firestone updates. Installing it does not launch Firestone by itself.
 - **Dedicated launch shortcut**: Creates a desktop shortcut named `Firestone2Green 启动 Firestone` for daily silent startup.
 - **Automatic update check**: Checks GitHub Releases on startup and shows the result in the top-right status area; network failures show an update-check warning.
+- **Friendly error explanations**: The log now adds short explanations and suggested fixes for common errors.
 - **Stable data loading**: Switches to `AuthOnlyOnline` before starting Firestone, so deck data, meta data, and tracker data can load normally.
 
 ## Quick Start

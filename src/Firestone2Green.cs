@@ -77,6 +77,7 @@ namespace Firestone2Green
         private NiceCheck skipCacheBox;
         private NumberStepper monitorSecondsBox;
         private NiceButton[] runButtons;
+        private readonly HashSet<string> explainedLogErrors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private volatile bool running;
 
         public MainForm()
@@ -1447,6 +1448,97 @@ namespace Firestone2Green
                 logBox.SelectionStart = logBox.TextLength;
             }
             logBox.AppendText(line + Environment.NewLine);
+            AppendFriendlyErrorExplanation(line);
+        }
+
+        private void AppendFriendlyErrorExplanation(string line)
+        {
+            string key, message;
+            if (!TryGetFriendlyErrorExplanation(line, out key, out message)) return;
+            if (explainedLogErrors.Contains(key)) return;
+            explainedLogErrors.Add(key);
+            logBox.AppendText(Environment.NewLine);
+            logBox.AppendText("【错误解释】" + message + Environment.NewLine);
+            logBox.AppendText(Environment.NewLine);
+        }
+
+        private bool TryGetFriendlyErrorExplanation(string line, out string key, out string message)
+        {
+            key = string.Empty;
+            message = string.Empty;
+            if (string.IsNullOrWhiteSpace(line)) return false;
+            string s = line.ToLowerInvariant();
+
+            if ((s.Contains("drivers\\etc\\hosts") || s.Contains("system32\\drivers\\etc\\hosts")) &&
+                (s.Contains("访问被拒绝") || s.Contains("access") || s.Contains("denied") || s.Contains("unauthorized")))
+            {
+                key = "hosts-access-denied";
+                message = "无法写入 Windows hosts。通常是没有管理员权限，或安全软件/hosts 保护拦截。请右键以管理员身份运行；若仍失败，把 Firestone2Green 加入安全软件允许列表或临时关闭 hosts 保护。";
+                return true;
+            }
+
+            if (s.Contains("未找到启动器") || s.Contains("未找到 overwolf 启动器") ||
+                s.Contains("overwolflauncher.exe") && s.Contains("未找到"))
+            {
+                key = "launcher-not-found";
+                message = "没有找到 Overwolf 启动器。通常是路径选错，或 Overwolf 安装在特殊目录。请点击“自动搜索”；仍失败就点“选择路径”，选择能直接看到 OverwolfLauncher.exe 或 Overwolf.exe 的 Overwolf 根目录。";
+                return true;
+            }
+
+            if (s.Contains("automation 接口未") || s.Contains("localhost:18765") ||
+                s.Contains("pingserver") || s.Contains("automation") && (s.Contains("timeout") || s.Contains("超时") || s.Contains("不可用")))
+            {
+                key = "automation-unavailable";
+                message = "Overwolf 本地 automation 接口没有连上。常见原因是 Firestone 没用本工具启动、Overwolf 启动太慢、旧进程残留或安全软件拦截本地端口。建议关闭 Overwolf/Firestone 后重新点“一键重启并授权”。";
+                return true;
+            }
+
+            if (s.Contains("远程服务器返回错误") && (s.Contains("403") || s.Contains("已禁止")) ||
+                s.Contains("api.github.com") && s.Contains("403"))
+            {
+                key = "github-403";
+                message = "GitHub 更新检查被限流或被网络环境拦截，不影响本地授权功能。稍后重开程序再检查，或手动访问 GitHub Releases 下载最新版。";
+                return true;
+            }
+
+            if ((s.Contains("网络连接失败") || s.Contains("无法连接") || s.Contains("连接失败") ||
+                 s.Contains("the remote name could not be resolved") || s.Contains("name resolution")) &&
+                (s.Contains("github") || s.Contains("更新检查")))
+            {
+                key = "update-network-failed";
+                message = "更新检查连不上 GitHub。通常是网络、代理、DNS 或防火墙问题；这只影响检查更新，不影响本地授权。网络恢复后重启本程序即可重新检查。";
+                return true;
+            }
+
+            if (s.Contains("退出码 1") || s.Contains("exit code 1"))
+            {
+                key = "exit-code-1";
+                message = "任务异常结束。请先看上方第一条 ERR 或红色错误位置；如果只看到退出码 1，优先尝试管理员运行、重新选择 Overwolf 路径，再执行一次。";
+                return true;
+            }
+
+            if (s.Contains("opk") && (s.Contains("未找到") || s.Contains("无法恢复")))
+            {
+                key = "opk-missing";
+                message = "缺少 Overwolf 的 OPK 缓存包。通常是 Firestone/Overwolf 安装不完整、刚更新还没缓存完成，或缓存被清理。请先正常启动一次 Firestone，等它更新完成后再运行本工具。";
+                return true;
+            }
+
+            if (s.Contains("找不到脚本") || s.Contains("firestone2green.ps1") && s.Contains("不存在"))
+            {
+                key = "script-missing";
+                message = "运行脚本缺失。可能是只复制了部分文件、杀毒软件隔离了脚本，或旧版本释放失败。建议重新下载最新 EXE，放到普通用户目录后以管理员身份运行。";
+                return true;
+            }
+
+            if (s.Contains("executionpolicy") || s.Contains("cannot be loaded because running scripts is disabled"))
+            {
+                key = "execution-policy";
+                message = "PowerShell 脚本执行被系统策略拦截。程序正常会使用 Bypass，如果仍出现这个错误，通常是企业策略或安全软件强制限制，需要把本程序加入允许列表。";
+                return true;
+            }
+
+            return false;
         }
 
         private void OpenFolder(string path)
