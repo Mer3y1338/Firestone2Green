@@ -122,9 +122,11 @@ function Find-OverwolfLauncherUnder {
     $node = $queue.Dequeue()
     $visited++
     try {
-      $direct = Join-Path $node.Path 'OverwolfLauncher.exe'
-      if (Test-Path -LiteralPath $direct -PathType Leaf) {
-        return (Resolve-Path -LiteralPath $direct).Path
+      foreach ($exeName in @('OverwolfLauncher.exe', 'Overwolf.exe')) {
+        $direct = Join-Path $node.Path $exeName
+        if (Test-Path -LiteralPath $direct -PathType Leaf) {
+          return (Resolve-Path -LiteralPath $direct).Path
+        }
       }
     } catch {}
     if ([int]$node.Depth -ge $MaxDepth) { continue }
@@ -156,15 +158,19 @@ function ConvertTo-OverwolfRootCandidate([string]$Candidate) {
   try {
     $p = [Environment]::ExpandEnvironmentVariables($Candidate.Trim().Trim([char[]]@([char]34)))
     if (Test-Path -LiteralPath $p -PathType Leaf) {
-      if ([IO.Path]::GetFileName($p).Equals('OverwolfLauncher.exe', [StringComparison]::OrdinalIgnoreCase)) {
+      $leafName = [IO.Path]::GetFileName($p)
+      if ($leafName.Equals('OverwolfLauncher.exe', [StringComparison]::OrdinalIgnoreCase) -or
+          $leafName.Equals('Overwolf.exe', [StringComparison]::OrdinalIgnoreCase)) {
         return (Resolve-Path -LiteralPath (Split-Path -Parent $p)).Path
       }
       return $null
     }
     if (Test-Path -LiteralPath $p -PathType Container) {
       $resolved = (Resolve-Path -LiteralPath $p).Path.TrimEnd('\')
-      $direct = Join-Path $resolved 'OverwolfLauncher.exe'
-      if (Test-Path -LiteralPath $direct -PathType Leaf) { return $resolved }
+      foreach ($exeName in @('OverwolfLauncher.exe', 'Overwolf.exe')) {
+        $direct = Join-Path $resolved $exeName
+        if (Test-Path -LiteralPath $direct -PathType Leaf) { return $resolved }
+      }
       $found = Find-OverwolfLauncherUnder -Root $resolved -MaxDepth 3 -MaxDirs 1200
       if ($found) { return (Split-Path -Parent $found) }
     }
@@ -183,9 +189,11 @@ function Resolve-OverwolfRoot {
   }
 
   Add-Candidate $RequestedRoot
+  Add-Candidate $CommonOverwolfRoot
   Add-Candidate (Join-Path $env:LOCALAPPDATA 'Overwolf')
   Add-Candidate (Join-Path $env:ProgramFiles 'Overwolf')
   if (${env:ProgramFiles(x86)}) { Add-Candidate (Join-Path ${env:ProgramFiles(x86)} 'Overwolf') }
+  if (${env:ProgramFiles(x86)}) { Add-Candidate (Join-Path ${env:ProgramFiles(x86)} 'Common Files\Overwolf') }
 
   try {
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -238,6 +246,7 @@ function Resolve-OverwolfRoot {
       Add-Candidate (Join-Path $drive.RootDirectory.FullName 'Overwolf')
       Add-Candidate (Join-Path $drive.RootDirectory.FullName 'Program Files\Overwolf')
       Add-Candidate (Join-Path $drive.RootDirectory.FullName 'Program Files (x86)\Overwolf')
+      Add-Candidate (Join-Path $drive.RootDirectory.FullName 'Program Files (x86)\Common Files\Overwolf')
     }
   } catch {}
 
@@ -269,12 +278,22 @@ function Resolve-OverwolfRoot {
 function Get-OverwolfLauncherPath {
   $root = Resolve-OverwolfRoot -RequestedRoot $OverwolfRoot -Deep
   if (-not $root) {
-    throw '未找到 OverwolfLauncher.exe。请在 Firestone2Green 界面点击“自动搜索”或“选择路径”，选择 OverwolfLauncher.exe 所在目录后重试。'
+    throw '未找到 Overwolf 启动器。请在 Firestone2Green 界面点击“自动搜索”或“选择路径”，选择包含 OverwolfLauncher.exe 或 Overwolf.exe 的目录后重试。'
   }
   $script:OverwolfRoot = $root
   $launcher = Join-Path $root 'OverwolfLauncher.exe'
   if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
-    throw "未找到启动器：$launcher"
+    $launcher = Join-Path $root 'Overwolf.exe'
+  }
+  if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+    $foundLauncher = Find-OverwolfLauncherUnder -Root $root -MaxDepth 3 -MaxDirs 1200
+    if ($foundLauncher) {
+      $launcher = $foundLauncher
+      $script:OverwolfRoot = Split-Path -Parent $foundLauncher
+    }
+  }
+  if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+    throw "未找到启动器：$root 下不存在 OverwolfLauncher.exe 或 Overwolf.exe"
   }
   return (Resolve-Path -LiteralPath $launcher).Path
 }
@@ -1093,6 +1112,10 @@ async function main(){
   const initialAdsService = window.adsService;
   function getAdsService(){ return window.adsService || initialAdsService || null; }
   let a = getAdsService();
+  try { if (window.__fsShieldInterval) clearInterval(window.__fsShieldInterval); } catch(e) {}
+  try { if (window.__fsShieldLightInterval) clearInterval(window.__fsShieldLightInterval); } catch(e) {}
+  window.__fsShieldInterval = null;
+  window.__fsShieldLightInterval = null;
 
   function parseMaybeJson(v){
     if (typeof v !== 'string') return v;
@@ -1252,11 +1275,21 @@ async function main(){
     return out;
   }
 
-  function apply(){
+  function apply(options){
+    const heavy = !!(options && options.heavy);
     a = getAdsService();
     try { patchAdsService(a); } catch(e) {}
-    try { patchPremiumDom(); } catch(e) {}
-    try { window.__fsShieldAngularPatch = patchAngularAds(); } catch(e) {}
+    if (heavy || !window.__fsShieldDomPatchDone) {
+      try { patchPremiumDom(); window.__fsShieldDomPatchDone = true; } catch(e) {}
+    }
+    if (heavy || !window.__fsShieldAngularPatchDone) {
+      try {
+        window.__fsShieldAngularPatch = patchAngularAds();
+        if ((window.__fsShieldAngularPatch?.premium || 0) > 0 || (window.__fsShieldAngularPatch?.services || 0) > 0) {
+          window.__fsShieldAngularPatchDone = true;
+        }
+      } catch(e) {}
+    }
     try { localStorage.setItem('CURRENT_SUB_PLAN', planJson); } catch(e) {}
     try { a?.subscriptions?.currentPlan$$?.next(plan); } catch(e) {}
     try { a?.currentPlan$$?.next(plan); } catch(e) {}
@@ -1265,8 +1298,16 @@ async function main(){
     try { a?.shouldDisplayAds$$?.next(false); } catch(e) {}
     try { a?.applyAuthPremiumHint?.(true); } catch(e) {}
   }
-  apply();
-  if (!window.__fsShieldInterval) window.__fsShieldInterval = setInterval(apply, 1000);
+  apply({heavy:true});
+  let fsShieldReinforceCount = 0;
+  window.__fsShieldLightInterval = setInterval(() => {
+    fsShieldReinforceCount++;
+    apply({heavy:fsShieldReinforceCount <= 8});
+    if (fsShieldReinforceCount >= 10) {
+      try { clearInterval(window.__fsShieldLightInterval); } catch(e) {}
+      window.__fsShieldLightInterval = null;
+    }
+  }, 2500);
   await new Promise(r => setTimeout(r, 100));
   a = getAdsService();
   const angularPatch = window.__fsShieldAngularPatch || { services: 0, premium: 0 };
@@ -1294,7 +1335,8 @@ async function main(){
       serviceStorage:!!a?.subscriptions?.localStorage?.__fsShieldPatched,
       browserStorage:!!window.__fsShieldStoragePatched,
       adsMethods:!!a?.__fsShieldAdsMethodsPatched,
-      interval:!!window.__fsShieldInterval
+      interval:!!window.__fsShieldLightInterval,
+      finiteReinforce:true
     }
   };
 }
@@ -1555,18 +1597,16 @@ async function main(){
   window.__fsShieldAvatarInterval = null;
   window.__fsShieldAvatarObserver = null;
   window.__fsShieldAvatarScheduled = false;
-  function schedulePatch(){
-    if (window.__fsShieldAvatarScheduled) return;
-    window.__fsShieldAvatarScheduled = true;
-    setTimeout(() => {
-      window.__fsShieldAvatarScheduled = false;
-      patchOnce();
-    }, 120);
-  }
   const first = patchOnce();
-  window.__fsShieldAvatarInterval = setInterval(patchOnce, 1500);
-  window.__fsShieldAvatarObserver = new MutationObserver(schedulePatch);
-  window.__fsShieldAvatarObserver.observe(document.documentElement, { childList:true, subtree:true, attributes:true, attributeFilter:['src','srcset','class','style'] });
+  let avatarRetryCount = 0;
+  window.__fsShieldAvatarInterval = setInterval(() => {
+    avatarRetryCount++;
+    patchOnce();
+    if (avatarRetryCount >= 10) {
+      try { clearInterval(window.__fsShieldAvatarInterval); } catch(e) {}
+      window.__fsShieldAvatarInterval = null;
+    }
+  }, 1000);
   await new Promise(r => setTimeout(r, 180));
   const latest = window.__fsShieldAvatarLastStats || first;
   return {
@@ -1583,7 +1623,8 @@ async function main(){
     leakedAvatarUrlMatches:latest.leakedAvatarUrlMatches,
     patchedRects:latest.patchedRects,
     interval:!!window.__fsShieldAvatarInterval,
-    observer:!!window.__fsShieldAvatarObserver
+    observer:false,
+    finiteRetry:true
   };
 }
 '@

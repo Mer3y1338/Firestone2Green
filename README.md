@@ -24,19 +24,20 @@
 
 - **一键处理**：提供 WinForms 图形界面，常用功能可直接点击执行。
 - **单文件分发**：EXE 内置 `scripts/Firestone2Green.ps1` 与默认头像资源。
-- **路径自适应**：支持自动搜索或手动选择 Overwolf 根目录；正确目录必须直接包含 `OverwolfLauncher.exe`，不再依赖固定 `D:\overwolf` 安装路径。
+- **路径自适应**：支持自动搜索或手动选择 Overwolf 根目录；正确目录必须直接包含 `OverwolfLauncher.exe` 或 `Overwolf.exe`，不再依赖固定 `D:\overwolf` 安装路径。
 - **本地授权**：完成授权状态修复后，恢复 Firestone / Overwolf 正常网络能力。
 - **头像修复**：仅替换 Firestone 左下角登录 / 账户头像。
 - **避免误伤**：不会替换酒馆战旗英雄头像、环境套牌图标、套牌图标或卡牌图片。
 - **静默持续修复**：支持安装计划任务，在系统重启或 Firestone 更新后自动补授权；安装本身不会主动启动 Firestone。
 - **快捷方式启动**：可创建桌面快捷方式 `Firestone2Green 启动 Firestone`，用于日常无弹窗启动。
+- **自动更新检查**：启动后自动对比 GitHub Releases，右上角提示是否已是最新版；网络不可用时会提示更新检查失败。
 - **数据稳定**：启动前恢复 AuthOnlyOnline 网络，避免套牌 / 环境数据在启动断网窗口里加载失败。
 
 ## 快速开始
 
 1. 从 GitHub Releases 下载 `Firestone2Green.exe`。
 2. 右键 `Firestone2Green.exe`，选择 **以管理员身份运行**。
-3. 在 **路径设置** 区域确认路径；如果没有自动识别，点击 **自动搜索** 或 **选择路径**，选择 Overwolf 根目录（打开后能直接看到 `OverwolfLauncher.exe` 的那一层目录）。选到子目录或上级目录时程序会弹窗提示正确位置。
+3. 在 **路径设置** 区域确认路径；如果没有自动识别，点击 **自动搜索** 或 **选择路径**，选择 Overwolf 根目录（打开后能直接看到 `OverwolfLauncher.exe` 或 `Overwolf.exe` 的那一层目录）。选到子目录或上级目录时程序会弹窗提示正确位置。
 4. 点击 **一键重启并授权**。
 5. 等待日志显示退出码 `0`。
 6. 点击 **验证状态**，确认网络模式与授权状态正常。

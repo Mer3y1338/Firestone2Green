@@ -4,9 +4,11 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Net;
 using System.Reflection;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -54,6 +56,10 @@ namespace Firestone2Green
         private const string AvatarResourceName = "Firestone2GreenAvatar.jpg";
         private const string ConfigFileName = "config.ini";
         private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
+        private const string OverwolfMainFile = "Overwolf.exe";
+        private const string AppVersion = "0.1.2";
+        private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
+        private const string LatestReleasePageUrl = "https://github.com/Mer3y1338/Firestone2Green/releases/latest";
         private readonly string baseDir;
         private readonly string scriptPath;
         private readonly string reportDir;
@@ -63,6 +69,8 @@ namespace Firestone2Green
         private string overwolfRoot;
         private TextBox logBox;
         private TextBox overwolfRootBox;
+        private Label updateMetricLabel;
+        private string latestReleaseUrl = LatestReleasePageUrl;
         private Pill adminPill, scriptPill, avatarPill, pathPill, statusPill;
         private NiceButton adminRestartButton;
         private NiceButton searchPathButton, selectPathButton;
@@ -83,6 +91,12 @@ namespace Firestone2Green
             if (string.IsNullOrEmpty(overwolfRoot)) overwolfRoot = FindOverwolfRoot(false);
             BuildUi();
             RefreshEnvironmentLabels();
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            BeginCheckForUpdates();
         }
 
         private void BuildUi()
@@ -200,7 +214,7 @@ namespace Firestone2Green
             metrics.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
             metrics.Controls.Add(Metric("网络", "AuthOnlyOnline"), 0, 0);
             metrics.Controls.Add(Metric("头像", "内置注入"), 0, 1);
-            metrics.Controls.Add(Metric("更新", "重新点一次"), 0, 2);
+            metrics.Controls.Add(Metric("更新", "检查中"), 0, 2);
             side.Controls.Add(metrics, 0, 0);
 
             Card avatar = NewCard();
@@ -234,8 +248,154 @@ namespace Firestone2Green
             c.Padding = new Padding(12, 4, 12, 4);
             Label line = L(name + "   " + value, 9F, FontStyle.Bold, P.Text);
             line.TextAlign = ContentAlignment.MiddleLeft;
+            if (name == "更新")
+            {
+                updateMetricLabel = line;
+                line.Cursor = Cursors.Hand;
+                line.Click += delegate { OpenLatestReleasePage(); };
+            }
             c.Controls.Add(line);
             return c;
+        }
+
+        private void BeginCheckForUpdates()
+        {
+            SetUpdateMetric("更新   检查中", P.Text);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    UpdateInfo info = FetchLatestRelease();
+                    latestReleaseUrl = string.IsNullOrEmpty(info.Url) ? LatestReleasePageUrl : info.Url;
+                    int cmp = CompareVersionTags(info.TagName, AppVersion);
+                    if (cmp > 0)
+                    {
+                        SetUpdateMetric("更新   发现 " + info.TagName, P.Clay);
+                        AppendLog("发现新版本: " + info.TagName + "  " + latestReleaseUrl);
+                    }
+                    else
+                    {
+                        SetUpdateMetric("更新   已是最新", P.Sage);
+                        AppendLog("更新检查：已是最新版本（本地 " + AppVersion + "，GitHub " + info.TagName + "）。");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    SetUpdateMetric("更新   检查失败", P.Clay);
+                    AppendLog("更新检查失败: " + ex.Message);
+                    ShowUpdateCheckFailed();
+                }
+            });
+        }
+
+        private UpdateInfo FetchLatestRelease()
+        {
+            try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch { }
+            try
+            {
+                HttpWebRequest req = CreateGithubRequest(LatestReleaseApiUrl);
+                req.Accept = "application/vnd.github+json";
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                using (Stream s = resp.GetResponseStream())
+                using (StreamReader sr = new StreamReader(s, Encoding.UTF8))
+                {
+                    string json = sr.ReadToEnd();
+                    string tag = JsonStringValue(json, "tag_name");
+                    string url = JsonStringValue(json, "html_url");
+                    if (string.IsNullOrEmpty(tag)) throw new InvalidDataException("GitHub Releases 返回内容缺少 tag_name。");
+                    return new UpdateInfo(tag, url);
+                }
+            }
+            catch
+            {
+                return FetchLatestReleaseFromRedirect();
+            }
+        }
+
+        private HttpWebRequest CreateGithubRequest(string url)
+        {
+            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+            req.Method = "GET";
+            req.UserAgent = "Firestone2Green/" + AppVersion + " update-check";
+            req.Timeout = 7000;
+            req.ReadWriteTimeout = 7000;
+            return req;
+        }
+
+        private UpdateInfo FetchLatestReleaseFromRedirect()
+        {
+            HttpWebRequest req = CreateGithubRequest(LatestReleasePageUrl);
+            req.AllowAutoRedirect = true;
+            using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+            {
+                string finalUrl = resp.ResponseUri == null ? LatestReleasePageUrl : resp.ResponseUri.AbsoluteUri;
+                Match m = Regex.Match(finalUrl, @"/releases/tag/(?<tag>[^/?#]+)", RegexOptions.IgnoreCase);
+                if (!m.Success) throw new InvalidDataException("无法从 GitHub Releases/latest 解析最新版本。");
+                string tag = Uri.UnescapeDataString(m.Groups["tag"].Value);
+                return new UpdateInfo(tag, finalUrl);
+            }
+        }
+
+        private static string JsonStringValue(string json, string key)
+        {
+            if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(key)) return string.Empty;
+            Match m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"(?<v>(?:\\\\.|[^\"])*)\"", RegexOptions.IgnoreCase);
+            if (!m.Success) return string.Empty;
+            string v = m.Groups["v"].Value;
+            return v.Replace("\\/", "/").Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        private int CompareVersionTags(string latestTag, string currentVersion)
+        {
+            Version latest = ParseVersionTag(latestTag);
+            Version current = ParseVersionTag(currentVersion);
+            if (latest == null || current == null) return string.Equals(latestTag, currentVersion, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+            return latest.CompareTo(current);
+        }
+
+        private Version ParseVersionTag(string tag)
+        {
+            if (string.IsNullOrWhiteSpace(tag)) return null;
+            string s = tag.Trim();
+            if (s.StartsWith("v", StringComparison.OrdinalIgnoreCase)) s = s.Substring(1);
+            Match m = Regex.Match(s, @"\d+(?:\.\d+){0,3}");
+            if (!m.Success) return null;
+            string[] parts = m.Value.Split('.');
+            while (parts.Length < 2)
+            {
+                Array.Resize(ref parts, parts.Length + 1);
+                parts[parts.Length - 1] = "0";
+            }
+            try { return new Version(string.Join(".", parts)); }
+            catch { return null; }
+        }
+
+        private void SetUpdateMetric(string text, Color color)
+        {
+            if (updateMetricLabel == null) return;
+            if (InvokeRequired) { BeginInvoke(new Action<string, Color>(SetUpdateMetric), text, color); return; }
+            updateMetricLabel.Text = text;
+            updateMetricLabel.ForeColor = color;
+            updateMetricLabel.Invalidate();
+        }
+
+        private void ShowUpdateCheckFailed()
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired) { BeginInvoke(new Action(ShowUpdateCheckFailed)); return; }
+            MessageBox.Show(this, "网络连接失败，更新检查失败。", "更新检查失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void OpenLatestReleasePage()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(latestReleaseUrl) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                AppendLog("打开 GitHub Releases 失败: " + ex.Message);
+            }
         }
 
         private Control BuildLeft()
@@ -273,7 +433,7 @@ namespace Firestone2Green
             g.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             c.Controls.Add(g);
             g.Controls.Add(L("路径设置", 8.5F, FontStyle.Bold, P.Clay), 0, 0);
-            g.Controls.Add(L("选择 Overwolf 根目录，目录下必须直接包含 OverwolfLauncher.exe。", 10.2F, FontStyle.Bold, P.Text), 0, 1);
+            g.Controls.Add(L("选择 Overwolf 根目录，需直接包含 OverwolfLauncher.exe 或 Overwolf.exe。", 10.2F, FontStyle.Bold, P.Text), 0, 1);
 
             Card input = NewCard();
             input.Fill = P.Soft;
@@ -730,7 +890,7 @@ namespace Firestone2Green
             {
                 using (FolderBrowserDialog dlg = new FolderBrowserDialog())
                 {
-                    dlg.Description = "请选择 Overwolf 根目录：该目录下必须直接包含 OverwolfLauncher.exe。不要选择 Overwolf 里面的子目录。";
+                    dlg.Description = "请选择 Overwolf 根目录：该目录下必须直接包含 OverwolfLauncher.exe 或 Overwolf.exe。不要选择 Overwolf 里面的子目录。";
                     dlg.ShowNewFolderButton = false;
                     string initial = NormalizeOverwolfRoot(overwolfRootBox == null ? overwolfRoot : overwolfRootBox.Text);
                     if (!string.IsNullOrEmpty(initial)) dlg.SelectedPath = initial;
@@ -779,15 +939,15 @@ namespace Firestone2Green
                 if (File.Exists(p))
                 {
                     string dir = Path.GetDirectoryName(Path.GetFullPath(p));
-                    if (string.Equals(Path.GetFileName(p), OverwolfLauncherFile, StringComparison.OrdinalIgnoreCase) &&
-                        DirectoryContainsOverwolfLauncher(dir))
+                    if (IsOverwolfExecutableFileName(Path.GetFileName(p)) &&
+                        DirectoryContainsOverwolfExecutable(dir))
                     {
                         root = TrimDirectoryPath(dir);
                         return true;
                     }
                     suggestedRoot = FindOverwolfRootAbove(dir);
                     if (string.IsNullOrEmpty(suggestedRoot)) suggestedRoot = FindOverwolfRootBelow(dir);
-                    problem = "你选择的是文件，但不是 OverwolfLauncher.exe。";
+                    problem = "你选择的是文件，但不是 OverwolfLauncher.exe 或 Overwolf.exe。";
                     return false;
                 }
 
@@ -798,7 +958,7 @@ namespace Firestone2Green
                 }
 
                 string full = TrimDirectoryPath(Path.GetFullPath(p));
-                if (DirectoryContainsOverwolfLauncher(full))
+                if (DirectoryContainsOverwolfExecutable(full))
                 {
                     root = full;
                     return true;
@@ -818,7 +978,7 @@ namespace Firestone2Green
                     return false;
                 }
 
-                problem = "该目录下没有找到 OverwolfLauncher.exe。正确目录必须直接包含 OverwolfLauncher.exe。";
+                problem = "该目录下没有找到 OverwolfLauncher.exe 或 Overwolf.exe。正确目录必须直接包含其中一个启动器文件。";
                 return false;
             }
             catch (Exception ex)
@@ -828,13 +988,20 @@ namespace Firestone2Green
             }
         }
 
-        private bool DirectoryContainsOverwolfLauncher(string dir)
+        private bool DirectoryContainsOverwolfExecutable(string dir)
         {
             try
             {
-                return !string.IsNullOrWhiteSpace(dir) && File.Exists(Path.Combine(dir, OverwolfLauncherFile));
+                return !string.IsNullOrWhiteSpace(dir) &&
+                    (File.Exists(Path.Combine(dir, OverwolfLauncherFile)) || File.Exists(Path.Combine(dir, OverwolfMainFile)));
             }
             catch { return false; }
+        }
+
+        private bool IsOverwolfExecutableFileName(string fileName)
+        {
+            return string.Equals(fileName, OverwolfLauncherFile, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(fileName, OverwolfMainFile, StringComparison.OrdinalIgnoreCase);
         }
 
         private string FindOverwolfRootAbove(string startDir)
@@ -846,7 +1013,7 @@ namespace Firestone2Green
                 while (d != null)
                 {
                     string full = TrimDirectoryPath(d.FullName);
-                    if (DirectoryContainsOverwolfLauncher(full)) return full;
+                    if (DirectoryContainsOverwolfExecutable(full)) return full;
                     d = d.Parent;
                 }
             }
@@ -859,11 +1026,18 @@ namespace Firestone2Green
             try
             {
                 if (string.IsNullOrWhiteSpace(startDir) || !Directory.Exists(startDir)) return string.Empty;
-                string found = FindFileUnder(startDir, OverwolfLauncherFile, 5, 6000);
+                string found = FindOverwolfExecutableUnder(startDir, 5, 6000);
                 if (!string.IsNullOrEmpty(found)) return TrimDirectoryPath(Path.GetDirectoryName(found));
             }
             catch { }
             return string.Empty;
+        }
+
+        private string FindOverwolfExecutableUnder(string root, int maxDepth, int maxDirs)
+        {
+            string found = FindFileUnder(root, OverwolfLauncherFile, maxDepth, maxDirs);
+            if (!string.IsNullOrEmpty(found)) return found;
+            return FindFileUnder(root, OverwolfMainFile, maxDepth, maxDirs);
         }
 
         private string TrimDirectoryPath(string path)
@@ -883,12 +1057,12 @@ namespace Firestone2Green
             if (!string.IsNullOrEmpty(suggestedRoot))
             {
                 message += "\n\n正确的 Overwolf 根目录应该是：\n" + suggestedRoot +
-                           "\n\n判断标准：打开这个目录时，应能直接看到 " + OverwolfLauncherFile + "。";
+                           "\n\n判断标准：打开这个目录时，应能直接看到 " + OverwolfLauncherFile + " 或 " + OverwolfMainFile + "。";
                 if (autoFilled) message += "\n\n已为你自动填入正确根目录。";
             }
             else
             {
-                message += "\n\n请点击“自动搜索”，或手动选择包含 " + OverwolfLauncherFile + " 的 Overwolf 根目录。";
+                message += "\n\n请点击“自动搜索”，或手动选择包含 " + OverwolfLauncherFile + " 或 " + OverwolfMainFile + " 的 Overwolf 根目录。";
             }
             MessageBox.Show(this, message, "路径选择错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -932,15 +1106,15 @@ namespace Firestone2Green
                 string p = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
                 if (File.Exists(p))
                 {
-                    if (string.Equals(Path.GetFileName(p), "OverwolfLauncher.exe", StringComparison.OrdinalIgnoreCase))
+                    if (IsOverwolfExecutableFileName(Path.GetFileName(p)))
                         return Path.GetFullPath(Path.GetDirectoryName(p));
                     return string.Empty;
                 }
                 if (Directory.Exists(p))
                 {
                     string full = Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                    if (File.Exists(Path.Combine(full, "OverwolfLauncher.exe"))) return full;
-                    string found = FindFileUnder(full, "OverwolfLauncher.exe", 3, 1200);
+                    if (DirectoryContainsOverwolfExecutable(full)) return full;
+                    string found = FindOverwolfExecutableUnder(full, 3, 1200);
                     if (!string.IsNullOrEmpty(found)) return Path.GetDirectoryName(found);
                 }
             }
@@ -975,6 +1149,7 @@ namespace Firestone2Green
                     add(Path.Combine(d.RootDirectory.FullName, "Overwolf"));
                     add(Path.Combine(d.RootDirectory.FullName, "Program Files", "Overwolf"));
                     add(Path.Combine(d.RootDirectory.FullName, "Program Files (x86)", "Overwolf"));
+                    add(Path.Combine(d.RootDirectory.FullName, "Program Files (x86)", "Common Files", "Overwolf"));
                 }
             }
             catch { }
@@ -1001,7 +1176,7 @@ namespace Firestone2Green
                 catch { }
                 foreach (string rootDir in roots)
                 {
-                    string found = FindFileUnder(rootDir, "OverwolfLauncher.exe", 6, 35000);
+                    string found = FindOverwolfExecutableUnder(rootDir, 6, 35000);
                     if (!string.IsNullOrEmpty(found)) return Path.GetDirectoryName(found);
                 }
             }
@@ -1304,6 +1479,17 @@ namespace Firestone2Green
         public readonly string Path;
         public readonly int Depth;
         public SearchNode(string path, int depth) { Path = path; Depth = depth; }
+    }
+
+    internal sealed class UpdateInfo
+    {
+        public readonly string TagName;
+        public readonly string Url;
+        public UpdateInfo(string tagName, string url)
+        {
+            TagName = tagName;
+            Url = url;
+        }
     }
 
     public sealed class NiceCheck : Control
