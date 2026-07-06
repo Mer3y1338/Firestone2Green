@@ -26,6 +26,7 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 
 - **One-click workflow**: Provides a WinForms GUI for common operations.
 - **Single-file distribution**: The EXE embeds `scripts/Firestone2Green.ps1` and the default avatar resource.
+- **Adaptive path detection**: Automatically searches for or lets the user select the Overwolf root folder. The correct folder must directly contain `OverwolfLauncher.exe`, so it no longer depends on a fixed `D:\overwolf` install path.
 - **Local authorization**: Restores the local authorization state and then keeps normal Firestone / Overwolf network functionality available.
 - **Avatar repair**: Replaces only the Firestone bottom-left login / account avatar.
 - **Safe avatar targeting**: Does not replace Battlegrounds hero portraits, meta deck icons, deck icons, card images, or other content artwork.
@@ -37,10 +38,11 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 
 1. Download `Firestone2Green.exe` from GitHub Releases.
 2. Right-click `Firestone2Green.exe` and choose **Run as administrator**.
-3. Click **一键重启并授权**.
-4. Wait until the log shows exit code `0`.
-5. Click **验证状态** to confirm the network mode and authorization status.
-6. If you want automatic repair after reboot, click **安装持续修复**.
+3. Confirm the **路径设置** field. If it is not detected automatically, click **自动搜索** or **选择路径** and choose the Overwolf root folder — the folder where `OverwolfLauncher.exe` is directly visible. If a child or parent folder is selected, the app shows the correct location.
+4. Click **一键重启并授权**.
+5. Wait until the log shows exit code `0`.
+6. Click **验证状态** to confirm the network mode and authorization status.
+7. If you want automatic repair after reboot, click **安装持续修复**.
 
 > [!TIP]
 > After installing persistent repair, it is recommended to launch Firestone through the desktop shortcut **Firestone2Green 启动 Firestone**.

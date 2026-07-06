@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -8,6 +9,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace Firestone2Green
 {
@@ -50,14 +52,20 @@ namespace Firestone2Green
     {
         private const string ScriptResourceName = "Firestone2Green.ps1";
         private const string AvatarResourceName = "Firestone2GreenAvatar.jpg";
+        private const string ConfigFileName = "config.ini";
+        private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
         private readonly string baseDir;
         private readonly string scriptPath;
         private readonly string reportDir;
         private readonly string avatarPath;
         private readonly string iconPath;
+        private readonly string configPath;
+        private string overwolfRoot;
         private TextBox logBox;
-        private Pill adminPill, scriptPill, avatarPill, statusPill;
+        private TextBox overwolfRootBox;
+        private Pill adminPill, scriptPill, avatarPill, pathPill, statusPill;
         private NiceButton adminRestartButton;
+        private NiceButton searchPathButton, selectPathButton;
         private NiceCheck skipCacheBox;
         private NumberStepper monitorSecondsBox;
         private NiceButton[] runButtons;
@@ -70,6 +78,9 @@ namespace Firestone2Green
             reportDir = Path.Combine(Path.GetDirectoryName(scriptPath) ?? baseDir, "FirestoneOfflineReports");
             avatarPath = ResolveAvatarPath(Path.Combine(baseDir, "assets", "avatar.jpg"));
             iconPath = Path.Combine(baseDir, "assets", "app.ico");
+            configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Firestone2Green", ConfigFileName);
+            overwolfRoot = LoadConfiguredOverwolfRoot();
+            if (string.IsNullOrEmpty(overwolfRoot)) overwolfRoot = FindOverwolfRoot(false);
             BuildUi();
             RefreshEnvironmentLabels();
         }
@@ -83,9 +94,9 @@ namespace Firestone2Green
                 else Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             }
             catch { }
-            Width = 1120;
-            Height = 900;
-            MinimumSize = new Size(960, 840);
+            Width = 1180;
+            Height = 960;
+            MinimumSize = new Size(1000, 900);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = P.Canvas;
             Font = new Font("Microsoft YaHei UI", 9F);
@@ -105,11 +116,11 @@ namespace Firestone2Green
             main.BackColor = P.Canvas;
             main.Margin = new Padding(0, 18, 0, 0);
             main.ColumnStyles.Clear();
-            main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-            main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+            main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
             root.Controls.Add(main, 0, 1);
             main.Controls.Add(BuildLeft(), 0, 0);
-            main.Controls.Add(BuildLog(), 1, 0);
+            main.Controls.Add(BuildRight(), 1, 0);
 
             Label footer = L("本地运行 · 不修改 Firestone 签名文件 · 更新后重新执行一次即可" + Environment.NewLine +
                              "本程序完全免费，只在 GitHub 上发布；任何付费购买的就是被骗了。如果帮到你，可以的话帮我点一个 Star，这对我很有帮助。", 8.5F, FontStyle.Regular, P.Faint);
@@ -120,7 +131,8 @@ namespace Firestone2Green
             AppendLog("项目目录: " + baseDir);
             AppendLog("脚本路径: " + scriptPath);
             AppendLog("头像资源: " + avatarPath);
-            AppendLog("推荐流程：首次点击“一键重启并授权”；需要持久化时点击“安装持续修复”（只安装监听，不会主动启动 Firestone），以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
+            AppendLog("Firestone/Overwolf 路径: " + (string.IsNullOrEmpty(overwolfRoot) ? "未选择（运行时会自动搜索）" : overwolfRoot));
+            AppendLog("推荐流程：先确认/搜索 Firestone 路径，再点击“一键重启并授权”；需要持久化时点击“安装持续修复”（只安装监听，不会主动启动 Firestone），以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
         }
 
         protected override void OnResizeBegin(EventArgs e)
@@ -167,10 +179,12 @@ namespace Firestone2Green
             adminPill = NewPill("管理员：检测中", P.SageSoft, P.Sage);
             scriptPill = NewPill("脚本：检测中", P.SageSoft, P.Sage);
             avatarPill = NewPill("头像：检测中", P.Soft, P.Muted);
+            pathPill = NewPill("路径：检测中", P.Soft, P.Muted);
             statusPill = NewPill("就绪", P.Soft, P.Muted);
             pills.Controls.Add(adminPill);
             pills.Controls.Add(scriptPill);
             pills.Controls.Add(avatarPill);
+            pills.Controls.Add(pathPill);
             pills.Controls.Add(statusPill);
             copy.Controls.Add(pills, 0, 3);
 
@@ -228,13 +242,77 @@ namespace Firestone2Green
         {
             TableLayoutPanel stack = Grid(1, 3);
             stack.Margin = new Padding(0, 0, 18, 0);
-            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 168));
+            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
             stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 188));
             stack.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             stack.Controls.Add(BuildPrimary(), 0, 0);
             stack.Controls.Add(BuildControls(), 0, 1);
             stack.Controls.Add(BuildMaintenance(), 0, 2);
             return stack;
+        }
+
+        private Control BuildRight()
+        {
+            TableLayoutPanel stack = Grid(1, 2);
+            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 206));
+            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            stack.Controls.Add(BuildPathPicker(), 0, 0);
+            stack.Controls.Add(BuildLog(), 0, 1);
+            return stack;
+        }
+
+        private Control BuildPathPicker()
+        {
+            Card c = NewCard();
+            c.Margin = new Padding(0, 0, 0, 14);
+            c.Padding = new Padding(22, 16, 22, 16);
+            TableLayoutPanel g = Grid(1, 4);
+            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            g.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            c.Controls.Add(g);
+            g.Controls.Add(L("路径设置", 8.5F, FontStyle.Bold, P.Clay), 0, 0);
+            g.Controls.Add(L("选择 Overwolf 根目录，目录下必须直接包含 OverwolfLauncher.exe。", 10.2F, FontStyle.Bold, P.Text), 0, 1);
+
+            Card input = NewCard();
+            input.Fill = P.Soft;
+            input.Shadow = 0;
+            input.Radius = 14;
+            input.Padding = new Padding(12, 8, 12, 6);
+            input.Margin = new Padding(0, 2, 0, 6);
+            overwolfRootBox = new TextBox();
+            overwolfRootBox.BorderStyle = BorderStyle.None;
+            overwolfRootBox.Dock = DockStyle.Fill;
+            overwolfRootBox.BackColor = P.Soft;
+            overwolfRootBox.ForeColor = P.Text;
+            overwolfRootBox.Font = new Font("Consolas", 9.5F);
+            overwolfRootBox.Text = overwolfRoot ?? string.Empty;
+            overwolfRootBox.TextChanged += delegate
+            {
+                overwolfRoot = overwolfRootBox.Text.Trim();
+                if (pathPill != null)
+                {
+                    pathPill.Text = "路径：待验证";
+                    pathPill.Fill = P.Soft;
+                    pathPill.ForeColor = P.Muted;
+                    pathPill.Invalidate();
+                }
+            };
+            input.Controls.Add(overwolfRootBox);
+            g.Controls.Add(input, 0, 2);
+
+            TableLayoutPanel buttons = Grid(2, 1);
+            buttons.ColumnStyles.Clear();
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            buttons.Margin = new Padding(0, 2, 0, 0);
+            searchPathButton = Btn("自动搜索", 1, delegate { AutoSearchOverwolfRootAsync(); });
+            selectPathButton = Btn("选择路径", 2, delegate { SelectOverwolfRoot(); });
+            buttons.Controls.Add(searchPathButton, 0, 0);
+            buttons.Controls.Add(selectPathButton, 1, 0);
+            g.Controls.Add(buttons, 0, 3);
+            return c;
         }
 
         private Control BuildPrimary()
@@ -244,13 +322,13 @@ namespace Firestone2Green
             c.Padding = new Padding(24, 14, 24, 16);
             TableLayoutPanel g = Grid(1, 4);
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
-            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            g.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             c.Controls.Add(g);
             g.Controls.Add(L("推荐操作", 8.5F, FontStyle.Bold, P.Clay), 0, 0);
             g.Controls.Add(L("一键重启并授权", 16F, FontStyle.Bold, P.Text), 0, 1);
-            g.Controls.Add(L("关闭旧进程，启动 Firestone automation，本地授权并替换登录头像，最后恢复全功能网络。", 9.6F, FontStyle.Regular, P.Muted), 0, 2);
+            g.Controls.Add(L("本地授权、头像修复、网络恢复。", 9.4F, FontStyle.Regular, P.Muted), 0, 2);
             NiceButton one = Btn("一键重启并授权", 0, delegate { RunMode("LaunchAuth", "一键重启 / 授权 / 头像 / 网络恢复"); });
             g.Controls.Add(one, 0, 3);
             runButtons = new NiceButton[] { one };
@@ -292,7 +370,7 @@ namespace Firestone2Green
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
-            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
+            g.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
             g.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             c.Controls.Add(g);
             g.Controls.Add(L("持续化与打包", 8.5F, FontStyle.Bold, P.Clay), 0, 0);
@@ -365,7 +443,7 @@ namespace Firestone2Green
             logBox.Dock = DockStyle.Fill;
             logBox.Multiline = true;
             logBox.ScrollBars = ScrollBars.None;
-            logBox.WordWrap = false;
+            logBox.WordWrap = true;
             logBox.ReadOnly = true;
             logBox.BorderStyle = BorderStyle.None;
             logBox.BackColor = P.Console;
@@ -466,6 +544,7 @@ namespace Firestone2Green
             scriptPill.Invalidate();
             avatarPill.Text = File.Exists(avatarPath) ? "头像：已内置" : "头像：使用内置";
             avatarPill.Invalidate();
+            RefreshPathLabel(false);
         }
 
         private bool IsAdministrator()
@@ -496,8 +575,15 @@ namespace Firestone2Green
         {
             if (running) { AppendLog("已有任务正在运行，请等待完成。"); return; }
             if (!File.Exists(scriptPath)) { AppendLog("找不到脚本: " + scriptPath); return; }
+            string rootForRun = GetOverwolfRootForRun(false);
+            if (string.IsNullOrEmpty(rootForRun) && (mode == "LaunchAuth" || mode == "Launch" || mode == "InstallAutoAuthTask"))
+            {
+                AppendLog("未找到 OverwolfLauncher.exe。请点击“自动搜索”或“选择路径”，选择 OverwolfLauncher.exe 所在目录后再执行。");
+                return;
+            }
             Directory.CreateDirectory(reportDir);
             string args = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(scriptPath) + " -Mode " + mode + " -AutomationPort 18765";
+            if (!string.IsNullOrEmpty(rootForRun)) args += " -OverwolfRoot " + Quote(rootForRun);
             if (File.Exists(avatarPath)) args += " -AvatarImagePath " + Quote(avatarPath);
             if (mode == "LaunchAuth" || mode == "Launch" || mode == "All")
             {
@@ -540,6 +626,539 @@ namespace Firestone2Green
                 catch (Exception ex) { AppendLog("执行失败: " + ex); }
                 finally { SetRunning(false, exitCode == 0 ? "就绪" : "任务结束，请查看日志"); }
             });
+        }
+
+        private void RefreshPathLabel(bool save)
+        {
+            string normalized = NormalizeOverwolfRoot(overwolfRootBox == null ? overwolfRoot : overwolfRootBox.Text);
+            bool ok = !string.IsNullOrEmpty(normalized);
+            if (ok) overwolfRoot = normalized;
+            if (pathPill != null)
+            {
+                pathPill.Text = ok ? "路径：已找到" : "路径：待选择";
+                pathPill.Fill = ok ? P.SageSoft : P.ClaySoft;
+                pathPill.ForeColor = ok ? P.Sage : P.Clay;
+                pathPill.Invalidate();
+            }
+            if (ok && save) SaveConfiguredOverwolfRoot(normalized);
+        }
+
+        private string GetOverwolfRootForRun(bool deepIfMissing)
+        {
+            string input = overwolfRootBox == null ? overwolfRoot : overwolfRootBox.Text;
+            string root, problem, suggested;
+            if (!string.IsNullOrWhiteSpace(input))
+            {
+                if (TryResolveOverwolfRootStrict(input, out root, out problem, out suggested))
+                {
+                    SetOverwolfRoot(root, true);
+                    return root;
+                }
+                if (!string.IsNullOrEmpty(suggested))
+                {
+                    SetOverwolfRoot(suggested, true);
+                    ShowOverwolfPathError(input, problem, suggested, true);
+                    AppendLog("路径防呆：已自动修正为 Overwolf 根目录: " + suggested);
+                    return suggested;
+                }
+                ShowOverwolfPathError(input, problem, string.Empty, false);
+                RefreshPathLabel(false);
+                return string.Empty;
+            }
+            root = NormalizeOverwolfRoot(input);
+            if (string.IsNullOrEmpty(root) && deepIfMissing)
+            {
+                AppendLog("正在自动搜索 OverwolfLauncher.exe...");
+                root = FindOverwolfRoot(true);
+            }
+            if (!string.IsNullOrEmpty(root))
+            {
+                SetOverwolfRoot(root, true);
+                return root;
+            }
+            RefreshPathLabel(false);
+            return string.Empty;
+        }
+
+        private void SetOverwolfRoot(string root, bool save)
+        {
+            root = NormalizeOverwolfRoot(root);
+            if (string.IsNullOrEmpty(root)) return;
+            overwolfRoot = root;
+            if (overwolfRootBox != null && !string.Equals(overwolfRootBox.Text, root, StringComparison.OrdinalIgnoreCase))
+                overwolfRootBox.Text = root;
+            RefreshPathLabel(save);
+            if (save) SaveConfiguredOverwolfRoot(root);
+        }
+
+        private void AutoSearchOverwolfRootAsync()
+        {
+            if (running) return;
+            SetRunning(true, "自动搜索路径");
+            AppendLog("");
+            AppendLog("===== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  自动搜索 Firestone/Overwolf 路径 =====");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    string found = FindOverwolfRoot(true);
+                    if (string.IsNullOrEmpty(found))
+                    {
+                        AppendLog("未自动找到 OverwolfLauncher.exe。请点击“选择路径”手动选择 Overwolf 安装目录。");
+                        if (InvokeRequired) BeginInvoke(new Action<bool, string>(SetRunning), false, "路径待选择");
+                        else SetRunning(false, "路径待选择");
+                        return;
+                    }
+                    AppendLog("已找到路径: " + found);
+                    if (InvokeRequired) BeginInvoke(new Action<string, bool>(SetOverwolfRoot), found, true);
+                    else SetOverwolfRoot(found, true);
+                    if (InvokeRequired) BeginInvoke(new Action<bool, string>(SetRunning), false, "就绪");
+                    else SetRunning(false, "就绪");
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("自动搜索失败: " + ex.Message);
+                    if (InvokeRequired) BeginInvoke(new Action<bool, string>(SetRunning), false, "路径待选择");
+                    else SetRunning(false, "路径待选择");
+                }
+            });
+        }
+
+        private void SelectOverwolfRoot()
+        {
+            try
+            {
+                using (FolderBrowserDialog dlg = new FolderBrowserDialog())
+                {
+                    dlg.Description = "请选择 Overwolf 根目录：该目录下必须直接包含 OverwolfLauncher.exe。不要选择 Overwolf 里面的子目录。";
+                    dlg.ShowNewFolderButton = false;
+                    string initial = NormalizeOverwolfRoot(overwolfRootBox == null ? overwolfRoot : overwolfRootBox.Text);
+                    if (!string.IsNullOrEmpty(initial)) dlg.SelectedPath = initial;
+                    if (dlg.ShowDialog(this) == DialogResult.OK)
+                    {
+                        string root, problem, suggested;
+                        string selected = dlg.SelectedPath;
+                        if (TryResolveOverwolfRootStrict(selected, out root, out problem, out suggested))
+                        {
+                            SetOverwolfRoot(root, true);
+                            AppendLog("已选择路径: " + root);
+                            return;
+                        }
+                        if (!string.IsNullOrEmpty(suggested))
+                        {
+                            SetOverwolfRoot(suggested, true);
+                            ShowOverwolfPathError(selected, problem, suggested, true);
+                            AppendLog("选择的不是 Overwolf 根目录，已自动修正为: " + suggested);
+                            return;
+                        }
+                        ShowOverwolfPathError(selected, problem, string.Empty, false);
+                        AppendLog("路径选择错误: " + problem + " 当前选择: " + selected);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog("选择路径失败: " + ex.Message);
+            }
+        }
+
+        private bool TryResolveOverwolfRootStrict(string input, out string root, out string problem, out string suggestedRoot)
+        {
+            root = string.Empty;
+            problem = string.Empty;
+            suggestedRoot = string.Empty;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(input))
+                {
+                    problem = "当前路径为空。";
+                    return false;
+                }
+
+                string p = Environment.ExpandEnvironmentVariables(input.Trim().Trim('"'));
+                if (File.Exists(p))
+                {
+                    string dir = Path.GetDirectoryName(Path.GetFullPath(p));
+                    if (string.Equals(Path.GetFileName(p), OverwolfLauncherFile, StringComparison.OrdinalIgnoreCase) &&
+                        DirectoryContainsOverwolfLauncher(dir))
+                    {
+                        root = TrimDirectoryPath(dir);
+                        return true;
+                    }
+                    suggestedRoot = FindOverwolfRootAbove(dir);
+                    if (string.IsNullOrEmpty(suggestedRoot)) suggestedRoot = FindOverwolfRootBelow(dir);
+                    problem = "你选择的是文件，但不是 OverwolfLauncher.exe。";
+                    return false;
+                }
+
+                if (!Directory.Exists(p))
+                {
+                    problem = "路径不存在。";
+                    return false;
+                }
+
+                string full = TrimDirectoryPath(Path.GetFullPath(p));
+                if (DirectoryContainsOverwolfLauncher(full))
+                {
+                    root = full;
+                    return true;
+                }
+
+                suggestedRoot = FindOverwolfRootAbove(full);
+                if (!string.IsNullOrEmpty(suggestedRoot))
+                {
+                    problem = "你选择的是 Overwolf 根目录里面的子目录。";
+                    return false;
+                }
+
+                suggestedRoot = FindOverwolfRootBelow(full);
+                if (!string.IsNullOrEmpty(suggestedRoot))
+                {
+                    problem = "你选择的是 Overwolf 根目录的上级目录。";
+                    return false;
+                }
+
+                problem = "该目录下没有找到 OverwolfLauncher.exe。正确目录必须直接包含 OverwolfLauncher.exe。";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                problem = "路径解析失败: " + ex.Message;
+                return false;
+            }
+        }
+
+        private bool DirectoryContainsOverwolfLauncher(string dir)
+        {
+            try
+            {
+                return !string.IsNullOrWhiteSpace(dir) && File.Exists(Path.Combine(dir, OverwolfLauncherFile));
+            }
+            catch { return false; }
+        }
+
+        private string FindOverwolfRootAbove(string startDir)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(startDir)) return string.Empty;
+                DirectoryInfo d = new DirectoryInfo(startDir);
+                while (d != null)
+                {
+                    string full = TrimDirectoryPath(d.FullName);
+                    if (DirectoryContainsOverwolfLauncher(full)) return full;
+                    d = d.Parent;
+                }
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private string FindOverwolfRootBelow(string startDir)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(startDir) || !Directory.Exists(startDir)) return string.Empty;
+                string found = FindFileUnder(startDir, OverwolfLauncherFile, 5, 6000);
+                if (!string.IsNullOrEmpty(found)) return TrimDirectoryPath(Path.GetDirectoryName(found));
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private string TrimDirectoryPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+            string full = Path.GetFullPath(path);
+            string root = Path.GetPathRoot(full);
+            if (!string.IsNullOrEmpty(root) && string.Equals(full, root, StringComparison.OrdinalIgnoreCase)) return root;
+            return full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private void ShowOverwolfPathError(string selected, string problem, string suggestedRoot, bool autoFilled)
+        {
+            string message = "Overwolf 路径选择错误。\n\n" +
+                             "错误原因：\n" + problem + "\n\n" +
+                             "当前选择：\n" + (string.IsNullOrWhiteSpace(selected) ? "（空）" : selected);
+            if (!string.IsNullOrEmpty(suggestedRoot))
+            {
+                message += "\n\n正确的 Overwolf 根目录应该是：\n" + suggestedRoot +
+                           "\n\n判断标准：打开这个目录时，应能直接看到 " + OverwolfLauncherFile + "。";
+                if (autoFilled) message += "\n\n已为你自动填入正确根目录。";
+            }
+            else
+            {
+                message += "\n\n请点击“自动搜索”，或手动选择包含 " + OverwolfLauncherFile + " 的 Overwolf 根目录。";
+            }
+            MessageBox.Show(this, message, "路径选择错误", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private string LoadConfiguredOverwolfRoot()
+        {
+            try
+            {
+                if (!File.Exists(configPath)) return string.Empty;
+                foreach (string line in File.ReadAllLines(configPath, Encoding.UTF8))
+                {
+                    if (line.StartsWith("OverwolfRoot=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string value = line.Substring("OverwolfRoot=".Length).Trim();
+                        string root = NormalizeOverwolfRoot(value);
+                        if (!string.IsNullOrEmpty(root)) return root;
+                    }
+                }
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private void SaveConfiguredOverwolfRoot(string root)
+        {
+            try
+            {
+                root = NormalizeOverwolfRoot(root);
+                if (string.IsNullOrEmpty(root)) return;
+                Directory.CreateDirectory(Path.GetDirectoryName(configPath));
+                File.WriteAllText(configPath, "OverwolfRoot=" + root + Environment.NewLine, Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        private string NormalizeOverwolfRoot(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path)) return string.Empty;
+                string p = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
+                if (File.Exists(p))
+                {
+                    if (string.Equals(Path.GetFileName(p), "OverwolfLauncher.exe", StringComparison.OrdinalIgnoreCase))
+                        return Path.GetFullPath(Path.GetDirectoryName(p));
+                    return string.Empty;
+                }
+                if (Directory.Exists(p))
+                {
+                    string full = Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    if (File.Exists(Path.Combine(full, "OverwolfLauncher.exe"))) return full;
+                    string found = FindFileUnder(full, "OverwolfLauncher.exe", 3, 1200);
+                    if (!string.IsNullOrEmpty(found)) return Path.GetDirectoryName(found);
+                }
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private string FindOverwolfRoot(bool deep)
+        {
+            HashSet<string> candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Action<string> add = delegate(string x) { if (!string.IsNullOrWhiteSpace(x)) candidates.Add(x); };
+
+            add(overwolfRoot);
+            add(ReadConfiguredPathRaw());
+            AddProcessCandidates(candidates);
+            AddRegistryCandidates(candidates);
+
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string pfx86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            add(Path.Combine(local, "Overwolf"));
+            add(Path.Combine(pf, "Overwolf"));
+            add(Path.Combine(pfx86, "Overwolf"));
+            add(Path.Combine(pfx86, "Common Files", "Overwolf"));
+
+            try
+            {
+                foreach (DriveInfo d in DriveInfo.GetDrives())
+                {
+                    if (!d.IsReady || d.DriveType != DriveType.Fixed) continue;
+                    add(Path.Combine(d.RootDirectory.FullName, "overwolf"));
+                    add(Path.Combine(d.RootDirectory.FullName, "Overwolf"));
+                    add(Path.Combine(d.RootDirectory.FullName, "Program Files", "Overwolf"));
+                    add(Path.Combine(d.RootDirectory.FullName, "Program Files (x86)", "Overwolf"));
+                }
+            }
+            catch { }
+
+            foreach (string candidate in candidates)
+            {
+                string root = NormalizeOverwolfRoot(candidate);
+                if (!string.IsNullOrEmpty(root)) return root;
+            }
+
+            if (deep)
+            {
+                List<string> roots = new List<string>();
+                if (!string.IsNullOrEmpty(local)) roots.Add(local);
+                if (!string.IsNullOrEmpty(pf)) roots.Add(pf);
+                if (!string.IsNullOrEmpty(pfx86)) roots.Add(pfx86);
+                try
+                {
+                    foreach (DriveInfo d in DriveInfo.GetDrives())
+                    {
+                        if (d.IsReady && d.DriveType == DriveType.Fixed) roots.Add(d.RootDirectory.FullName);
+                    }
+                }
+                catch { }
+                foreach (string rootDir in roots)
+                {
+                    string found = FindFileUnder(rootDir, "OverwolfLauncher.exe", 6, 35000);
+                    if (!string.IsNullOrEmpty(found)) return Path.GetDirectoryName(found);
+                }
+            }
+            return string.Empty;
+        }
+
+        private string ReadConfiguredPathRaw()
+        {
+            try
+            {
+                if (!File.Exists(configPath)) return string.Empty;
+                foreach (string line in File.ReadAllLines(configPath, Encoding.UTF8))
+                    if (line.StartsWith("OverwolfRoot=", StringComparison.OrdinalIgnoreCase)) return line.Substring("OverwolfRoot=".Length).Trim();
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private void AddProcessCandidates(HashSet<string> candidates)
+        {
+            string[] names = new string[] { "OverwolfLauncher", "Overwolf" };
+            foreach (string name in names)
+            {
+                try
+                {
+                    foreach (Process p in Process.GetProcessesByName(name))
+                    {
+                        try
+                        {
+                            string file = p.MainModule.FileName;
+                            if (!string.IsNullOrEmpty(file)) candidates.Add(file);
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private void AddRegistryCandidates(HashSet<string> candidates)
+        {
+            string[] subKeys = new string[] {
+                @"Software\Microsoft\Windows\CurrentVersion\Run",
+                @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
+            };
+            RegistryKey[] roots = new RegistryKey[] { Registry.CurrentUser, Registry.LocalMachine };
+            foreach (RegistryKey root in roots)
+            {
+                foreach (string sub in subKeys)
+                {
+                    try
+                    {
+                        using (RegistryKey key = root.OpenSubKey(sub))
+                        {
+                            if (key == null) continue;
+                            foreach (string name in key.GetValueNames())
+                            {
+                                string value = Convert.ToString(key.GetValue(name));
+                                if (value.IndexOf("overwolf", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    string exe = ExtractExecutablePath(value);
+                                    if (!string.IsNullOrEmpty(exe)) candidates.Add(exe);
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            string[] uninstallKeys = new string[] {
+                @"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                @"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+            };
+            foreach (RegistryKey root in roots)
+            {
+                foreach (string sub in uninstallKeys)
+                {
+                    try
+                    {
+                        using (RegistryKey key = root.OpenSubKey(sub))
+                        {
+                            if (key == null) continue;
+                            foreach (string child in key.GetSubKeyNames())
+                            {
+                                using (RegistryKey app = key.OpenSubKey(child))
+                                {
+                                    if (app == null) continue;
+                                    string display = Convert.ToString(app.GetValue("DisplayName"));
+                                    if (display.IndexOf("Overwolf", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                                    string install = Convert.ToString(app.GetValue("InstallLocation"));
+                                    string icon = Convert.ToString(app.GetValue("DisplayIcon"));
+                                    string uninstall = Convert.ToString(app.GetValue("UninstallString"));
+                                    if (!string.IsNullOrEmpty(install)) candidates.Add(install);
+                                    if (!string.IsNullOrEmpty(icon)) candidates.Add(ExtractExecutablePath(icon));
+                                    if (!string.IsNullOrEmpty(uninstall)) candidates.Add(ExtractExecutablePath(uninstall));
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+
+        private string ExtractExecutablePath(string command)
+        {
+            if (string.IsNullOrWhiteSpace(command)) return string.Empty;
+            string s = Environment.ExpandEnvironmentVariables(command.Trim());
+            if (s.StartsWith("\""))
+            {
+                int end = s.IndexOf('"', 1);
+                if (end > 1) return s.Substring(1, end - 1);
+            }
+            int exe = s.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+            if (exe >= 0) return s.Substring(0, exe + 4).Trim().Trim('"');
+            return s.Trim().Trim('"');
+        }
+
+        private string FindFileUnder(string root, string fileName, int maxDepth, int maxDirs)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return string.Empty;
+                Queue<SearchNode> q = new Queue<SearchNode>();
+                q.Enqueue(new SearchNode(root, 0));
+                int visited = 0;
+                while (q.Count > 0 && visited < maxDirs)
+                {
+                    SearchNode n = q.Dequeue();
+                    visited++;
+                    try
+                    {
+                        string direct = Path.Combine(n.Path, fileName);
+                        if (File.Exists(direct)) return direct;
+                    }
+                    catch { }
+                    if (n.Depth >= maxDepth) continue;
+                    string[] dirs;
+                    try { dirs = Directory.GetDirectories(n.Path); }
+                    catch { continue; }
+                    foreach (string dir in dirs)
+                    {
+                        string leaf = Path.GetFileName(dir);
+                        if (ShouldSkipSearchDir(leaf)) continue;
+                        q.Enqueue(new SearchNode(dir, n.Depth + 1));
+                    }
+                }
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private bool ShouldSkipSearchDir(string leaf)
+        {
+            if (string.IsNullOrEmpty(leaf)) return false;
+            string x = leaf.ToLowerInvariant();
+            return x == "$recycle.bin" || x == "system volume information" || x == "windows" || x == "winreagent" || x == "recovery" || x == "node_modules" || x == ".git" || x == "package cache";
         }
 
         private string GetPowerShellPath()
@@ -631,6 +1250,9 @@ namespace Firestone2Green
             if (InvokeRequired) { BeginInvoke(new Action<bool, string>(SetRunning), value, status); return; }
             running = value;
             if (runButtons != null) foreach (NiceButton b in runButtons) b.Enabled = !value;
+            if (searchPathButton != null) searchPathButton.Enabled = !value;
+            if (selectPathButton != null) selectPathButton.Enabled = !value;
+            if (overwolfRootBox != null) overwolfRootBox.ReadOnly = value;
             string s = value ? "运行中：" + (status.Length > 14 ? status.Substring(0, 14) + "..." : status) : status;
             statusPill.Text = s;
             statusPill.Fill = value ? P.ClaySoft : P.Soft;
@@ -674,6 +1296,14 @@ namespace Firestone2Green
                     return new Bitmap(img);
             }
         }
+    }
+
+
+    internal sealed class SearchNode
+    {
+        public readonly string Path;
+        public readonly int Depth;
+        public SearchNode(string path, int depth) { Path = path; Depth = depth; }
     }
 
     public sealed class NiceCheck : Control

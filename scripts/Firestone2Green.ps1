@@ -1,4 +1,4 @@
-﻿<# 
+﻿<#
 Firestone2Green
 
 Purpose:
@@ -22,7 +22,7 @@ param(
 
   [string]$AppId = 'lnknbakkpommmjjdnelmfbjjdbocfpnpbkijjnob',
   [string]$AppName = 'Firestone',
-  [string]$OverwolfRoot = 'D:\overwolf',
+  [string]$OverwolfRoot = '',
   [string]$CommonOverwolfRoot = "${env:ProgramFiles(x86)}\Common Files\Overwolf",
   [string]$ReportDir = "$PSScriptRoot\FirestoneOfflineReports",
   [string]$FirewallGroup = 'Firestone Offline Block',
@@ -101,6 +101,186 @@ function Resolve-ExistingPath([string]$Path) {
   }
   return $null
 }
+
+function Test-SkipSearchDirectory([string]$Name) {
+  if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+  $n = $Name.ToLowerInvariant()
+  return $n -in @('$recycle.bin','system volume information','windows','winreagent','recovery','node_modules','.git','package cache')
+}
+
+function Find-OverwolfLauncherUnder {
+  param(
+    [string]$Root,
+    [int]$MaxDepth = 4,
+    [int]$MaxDirs = 8000
+  )
+  if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) { return $null }
+  $queue = New-Object System.Collections.Queue
+  $queue.Enqueue([pscustomobject]@{ Path = (Resolve-Path -LiteralPath $Root).Path; Depth = 0 })
+  $visited = 0
+  while ($queue.Count -gt 0 -and $visited -lt $MaxDirs) {
+    $node = $queue.Dequeue()
+    $visited++
+    try {
+      $direct = Join-Path $node.Path 'OverwolfLauncher.exe'
+      if (Test-Path -LiteralPath $direct -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $direct).Path
+      }
+    } catch {}
+    if ([int]$node.Depth -ge $MaxDepth) { continue }
+    try {
+      Get-ChildItem -LiteralPath $node.Path -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        if (-not (Test-SkipSearchDirectory $_.Name)) {
+          $queue.Enqueue([pscustomobject]@{ Path = $_.FullName; Depth = ([int]$node.Depth + 1) })
+        }
+      }
+    } catch {}
+  }
+  return $null
+}
+
+function ConvertTo-ExecutablePathFromCommand([string]$Command) {
+  if ([string]::IsNullOrWhiteSpace($Command)) { return $null }
+  $cmd = [Environment]::ExpandEnvironmentVariables($Command.Trim())
+  if ($cmd.StartsWith([string][char]34)) {
+    $end = $cmd.IndexOf([char]34, 1)
+    if ($end -gt 1) { return $cmd.Substring(1, $end - 1) }
+  }
+  $idx = $cmd.IndexOf('.exe', [StringComparison]::OrdinalIgnoreCase)
+  if ($idx -ge 0) { return $cmd.Substring(0, $idx + 4).Trim().Trim([char[]]@([char]34)) }
+  return $cmd.Trim().Trim([char[]]@([char]34))
+}
+
+function ConvertTo-OverwolfRootCandidate([string]$Candidate) {
+  if ([string]::IsNullOrWhiteSpace($Candidate)) { return $null }
+  try {
+    $p = [Environment]::ExpandEnvironmentVariables($Candidate.Trim().Trim([char[]]@([char]34)))
+    if (Test-Path -LiteralPath $p -PathType Leaf) {
+      if ([IO.Path]::GetFileName($p).Equals('OverwolfLauncher.exe', [StringComparison]::OrdinalIgnoreCase)) {
+        return (Resolve-Path -LiteralPath (Split-Path -Parent $p)).Path
+      }
+      return $null
+    }
+    if (Test-Path -LiteralPath $p -PathType Container) {
+      $resolved = (Resolve-Path -LiteralPath $p).Path.TrimEnd('\')
+      $direct = Join-Path $resolved 'OverwolfLauncher.exe'
+      if (Test-Path -LiteralPath $direct -PathType Leaf) { return $resolved }
+      $found = Find-OverwolfLauncherUnder -Root $resolved -MaxDepth 3 -MaxDirs 1200
+      if ($found) { return (Split-Path -Parent $found) }
+    }
+  } catch {}
+  return $null
+}
+
+function Resolve-OverwolfRoot {
+  param(
+    [string]$RequestedRoot,
+    [switch]$Deep
+  )
+  $candidates = New-Object System.Collections.Generic.List[string]
+  function Add-Candidate([string]$Value) {
+    if (-not [string]::IsNullOrWhiteSpace($Value) -and -not $candidates.Contains($Value)) { $candidates.Add($Value) }
+  }
+
+  Add-Candidate $RequestedRoot
+  Add-Candidate (Join-Path $env:LOCALAPPDATA 'Overwolf')
+  Add-Candidate (Join-Path $env:ProgramFiles 'Overwolf')
+  if (${env:ProgramFiles(x86)}) { Add-Candidate (Join-Path ${env:ProgramFiles(x86)} 'Overwolf') }
+
+  try {
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -in @('Overwolf.exe','OverwolfLauncher.exe') -and $_.ExecutablePath } |
+      ForEach-Object { Add-Candidate $_.ExecutablePath }
+  } catch {}
+
+  foreach ($keyPath in @(
+      'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
+      'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
+      'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
+    )) {
+    try {
+      if (Test-Path $keyPath) {
+        $props = Get-ItemProperty -Path $keyPath -ErrorAction SilentlyContinue
+        foreach ($prop in $props.PSObject.Properties) {
+          $value = [string]$prop.Value
+          if ($value -match '(?i)overwolf') { Add-Candidate (ConvertTo-ExecutablePathFromCommand $value) }
+        }
+      }
+    } catch {}
+  }
+
+  foreach ($keyPath in @(
+      'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+      'HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+      'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+      'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+    )) {
+    try {
+      if (Test-Path $keyPath) {
+        Get-ChildItem -Path $keyPath -ErrorAction SilentlyContinue | ForEach-Object {
+          try {
+            $app = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
+            if ([string]$app.DisplayName -match '(?i)Overwolf') {
+              Add-Candidate ([string]$app.InstallLocation)
+              Add-Candidate (ConvertTo-ExecutablePathFromCommand ([string]$app.DisplayIcon))
+              Add-Candidate (ConvertTo-ExecutablePathFromCommand ([string]$app.UninstallString))
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  try {
+    foreach ($drive in [IO.DriveInfo]::GetDrives()) {
+      if (-not $drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed) { continue }
+      Add-Candidate (Join-Path $drive.RootDirectory.FullName 'overwolf')
+      Add-Candidate (Join-Path $drive.RootDirectory.FullName 'Overwolf')
+      Add-Candidate (Join-Path $drive.RootDirectory.FullName 'Program Files\Overwolf')
+      Add-Candidate (Join-Path $drive.RootDirectory.FullName 'Program Files (x86)\Overwolf')
+    }
+  } catch {}
+
+  foreach ($candidate in $candidates) {
+    $root = ConvertTo-OverwolfRootCandidate $candidate
+    if ($root) { return $root }
+  }
+
+  if ($Deep) {
+    $deepRoots = New-Object System.Collections.Generic.List[string]
+    foreach ($r in @($env:LOCALAPPDATA, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+      if ($r -and (Test-Path -LiteralPath $r -PathType Container) -and -not $deepRoots.Contains($r)) { $deepRoots.Add($r) }
+    }
+    try {
+      foreach ($drive in [IO.DriveInfo]::GetDrives()) {
+        if ($drive.IsReady -and $drive.DriveType -eq [IO.DriveType]::Fixed -and -not $deepRoots.Contains($drive.RootDirectory.FullName)) {
+          $deepRoots.Add($drive.RootDirectory.FullName)
+        }
+      }
+    } catch {}
+    foreach ($rootDir in $deepRoots) {
+      $found = Find-OverwolfLauncherUnder -Root $rootDir -MaxDepth 6 -MaxDirs 35000
+      if ($found) { return (Split-Path -Parent $found) }
+    }
+  }
+  return $null
+}
+
+function Get-OverwolfLauncherPath {
+  $root = Resolve-OverwolfRoot -RequestedRoot $OverwolfRoot -Deep
+  if (-not $root) {
+    throw '未找到 OverwolfLauncher.exe。请在 Firestone2Green 界面点击“自动搜索”或“选择路径”，选择 OverwolfLauncher.exe 所在目录后重试。'
+  }
+  $script:OverwolfRoot = $root
+  $launcher = Join-Path $root 'OverwolfLauncher.exe'
+  if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+    throw "未找到启动器：$launcher"
+  }
+  return (Resolve-Path -LiteralPath $launcher).Path
+}
+
+$resolvedOverwolfRoot = Resolve-OverwolfRoot -RequestedRoot $OverwolfRoot
+if ($resolvedOverwolfRoot) { $OverwolfRoot = $resolvedOverwolfRoot }
 
 function Assert-PathUnderRoot([string]$Path, [string]$Root) {
   $resolvedPath = Resolve-ExistingPath $Path
@@ -607,7 +787,8 @@ function Install-ShieldTask {
   Write-Step "安装计划任务：$TaskName"
   $script = $PSCommandPath
   if (-not $script) { throw '无法确定当前脚本路径，不能安装计划任务。' }
-  $actionArgs = "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Mode $TaskMode -AutomationPort $AutomationPort -SkipCacheQuarantine"
+  $rootArg = if (-not [string]::IsNullOrWhiteSpace($OverwolfRoot)) { " -OverwolfRoot `"$OverwolfRoot`"" } else { '' }
+  $actionArgs = "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Mode $TaskMode -AutomationPort $AutomationPort$rootArg -SkipCacheQuarantine"
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
   if ($TaskMode -eq 'WatchFirestone') {
     $triggers = @((New-ScheduledTaskTrigger -AtLogOn))
@@ -635,7 +816,8 @@ function Install-LaunchTask {
   Write-Step "安装静默启动任务：$launchTaskName"
   $script = $PSCommandPath
   if (-not $script) { throw '无法确定当前脚本路径，不能安装静默启动任务。' }
-  $actionArgs = "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Mode LaunchAuth -AutomationPort $AutomationPort -SkipCacheQuarantine"
+  $rootArg = if (-not [string]::IsNullOrWhiteSpace($OverwolfRoot)) { " -OverwolfRoot `"$OverwolfRoot`"" } else { '' }
+  $actionArgs = "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Mode LaunchAuth -AutomationPort $AutomationPort$rootArg -SkipCacheQuarantine"
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
   $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -RunLevel Highest -LogonType Interactive
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
@@ -1460,10 +1642,7 @@ function Start-FirestoneWithAutomation {
     [switch]$RestartExisting,
     [switch]$SkipMonitor
   )
-  $launcher = Join-Path $OverwolfRoot 'OverwolfLauncher.exe'
-  if (-not (Test-Path -LiteralPath $launcher)) {
-    throw "未找到启动器：$launcher"
-  }
+  $launcher = Get-OverwolfLauncherPath
   if ($RestartExisting -and -not $NoKill) {
     Write-Step '检测到 Firestone 已运行但未开启 automation，自动重启并补授权'
     Set-State $State 'autoRestartStopped' (Stop-OverwolfProcesses)
@@ -1483,10 +1662,7 @@ function Invoke-Launch {
   param([System.Collections.IDictionary]$State)
   Assert-Admin '启动前确保阻断规则已应用'
   Invoke-Apply -State $State
-  $launcher = Join-Path $OverwolfRoot 'OverwolfLauncher.exe'
-  if (-not (Test-Path -LiteralPath $launcher)) {
-    throw "未找到启动器：$launcher"
-  }
+  $launcher = Get-OverwolfLauncherPath
   Write-Step '在离线阻断已生效后启动 Firestone'
   Start-Process -FilePath $launcher -ArgumentList @('-launchapp', $AppId, '-from-desktop')
   Start-Sleep -Seconds 3
@@ -1667,6 +1843,7 @@ $state = [ordered]@{
   mode = $Mode
   appId = $AppId
   appName = $AppName
+  overwolfRoot = $OverwolfRoot
   script = $PSCommandPath
   user = "$env:USERDOMAIN\$env:USERNAME"
   computer = $env:COMPUTERNAME
