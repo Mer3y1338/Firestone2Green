@@ -58,7 +58,7 @@ namespace Firestone2Green
         private const string DisclaimerFileName = "disclaimer.ok";
         private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
         private const string OverwolfMainFile = "Overwolf.exe";
-        private const string AppVersion = "0.1.5";
+        private const string AppVersion = "0.1.6";
         private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
         private const string LatestReleasePageUrl = "https://github.com/Mer3y1338/Firestone2Green/releases/latest";
         private readonly string baseDir;
@@ -1537,6 +1537,15 @@ namespace Firestone2Green
             message = string.Empty;
             if (string.IsNullOrWhiteSpace(line)) return false;
             string s = line.ToLowerInvariant();
+
+            if (s.Contains("task scheduler service is not running") ||
+                s.Contains("windows 任务计划程序服务未运行") ||
+                s.Contains("任务计划程序服务") && (s.Contains("未运行") || s.Contains("禁用") || s.Contains("schedule")))
+            {
+                key = "task-scheduler-not-running";
+                message = "Windows 任务计划程序服务没有运行，所以无法安装“持续修复”和桌面静默启动快捷方式。通常是系统精简版或优化工具禁用了服务。请打开 services.msc，找到“Task Scheduler / 任务计划程序”，将启动类型设为“自动”并启动服务，然后重新点击“安装持续修复”。";
+                return true;
+            }
 
             if ((s.Contains("drivers\\etc\\hosts") || s.Contains("system32\\drivers\\etc\\hosts")) &&
                 (s.Contains("访问被拒绝") || s.Contains("access") || s.Contains("denied") || s.Contains("unauthorized")))

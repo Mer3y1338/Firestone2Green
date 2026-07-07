@@ -798,12 +798,52 @@ function Write-Report {
   return $path
 }
 
+function Ensure-TaskSchedulerService {
+  Write-Step '检查 Windows 任务计划程序服务'
+  try {
+    $svc = Get-Service -Name 'Schedule' -ErrorAction Stop
+  } catch {
+    throw '未找到 Windows 任务计划程序服务（Schedule）。当前系统可能被精简或服务组件损坏，无法安装持续修复计划任务。'
+  }
+
+  if ($svc.Status -eq 'Running') {
+    Write-Host '任务计划程序服务正在运行。'
+    return
+  }
+
+  Write-Warning "任务计划程序服务当前状态：$($svc.Status)，正在尝试启动。"
+  try {
+    Start-Service -Name 'Schedule' -ErrorAction Stop
+    $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(12))
+  } catch {
+    Write-Warning "直接启动任务计划程序服务失败：$($_.Exception.Message)"
+    try {
+      # 部分“优化工具”会把服务启动类型改成禁用；先尝试恢复为自动，再启动。
+      & sc.exe config Schedule start= auto | Out-Host
+      Start-Sleep -Milliseconds 500
+      Start-Service -Name 'Schedule' -ErrorAction Stop
+      $svc = Get-Service -Name 'Schedule' -ErrorAction Stop
+      $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(12))
+    } catch {
+      Write-Warning "恢复并启动任务计划程序服务失败：$($_.Exception.Message)"
+    }
+  }
+
+  try { $svc = Get-Service -Name 'Schedule' -ErrorAction Stop } catch {}
+  if (-not $svc -or $svc.Status -ne 'Running') {
+    throw 'Windows 任务计划程序服务未运行，无法安装持续修复/静默启动任务。请打开 services.msc，找到“Task Scheduler / 任务计划程序”，将启动类型设为“自动”并启动服务；如果被精简系统或优化工具禁用，请恢复该服务后再点“安装持续修复”。'
+  }
+
+  Write-Host '任务计划程序服务已启动。'
+}
+
 function Install-ShieldTask {
   param(
     [string]$TaskName,
     [string]$TaskMode = 'Apply'
   )
   Write-Step "安装计划任务：$TaskName"
+  Ensure-TaskSchedulerService
   $script = $PSCommandPath
   if (-not $script) { throw '无法确定当前脚本路径，不能安装计划任务。' }
   $rootArg = if (-not [string]::IsNullOrWhiteSpace($OverwolfRoot)) { " -OverwolfRoot `"$OverwolfRoot`"" } else { '' }
@@ -833,6 +873,7 @@ function Install-LaunchTask {
   )
   $launchTaskName = "$TaskName Launch"
   Write-Step "安装静默启动任务：$launchTaskName"
+  Ensure-TaskSchedulerService
   $script = $PSCommandPath
   if (-not $script) { throw '无法确定当前脚本路径，不能安装静默启动任务。' }
   $rootArg = if (-not [string]::IsNullOrWhiteSpace($OverwolfRoot)) { " -OverwolfRoot `"$OverwolfRoot`"" } else { '' }
@@ -890,6 +931,7 @@ sh.Run "schtasks.exe /Run /TN ""$escapedTask""", 0, False
 function Remove-ShieldTask {
   param([string]$TaskName)
   Write-Step "删除计划任务：$TaskName"
+  Ensure-TaskSchedulerService
   if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
