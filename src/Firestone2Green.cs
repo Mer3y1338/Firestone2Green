@@ -6,6 +6,7 @@ using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -58,7 +59,7 @@ namespace Firestone2Green
         private const string DisclaimerFileName = "disclaimer.ok";
         private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
         private const string OverwolfMainFile = "Overwolf.exe";
-        private const string AppVersion = "0.1.6";
+        private const string AppVersion = "0.1.7";
         private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
         private const string LatestReleasePageUrl = "https://github.com/Mer3y1338/Firestone2Green/releases/latest";
         private readonly string baseDir;
@@ -69,7 +70,7 @@ namespace Firestone2Green
         private readonly string configPath;
         private readonly string disclaimerPath;
         private string overwolfRoot;
-        private TextBox logBox;
+        private RichTextBox logBox;
         private TextBox overwolfRootBox;
         private Label updateMetricLabel;
         private string latestReleaseUrl = LatestReleasePageUrl;
@@ -116,21 +117,40 @@ namespace Firestone2Green
             catch { }
             Width = 1180;
             Height = 960;
-            MinimumSize = new Size(1000, 900);
+            MinimumSize = new Size(920, 700);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = P.Canvas;
             Font = new Font("Microsoft YaHei UI", 9F);
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);
+            AutoScroll = false;
             DoubleBuffered = true;
 
+            Panel viewport = new Panel();
+            viewport.Dock = DockStyle.Fill;
+            viewport.AutoScroll = true;
+            viewport.BackColor = P.Canvas;
+            Controls.Add(viewport);
+
             TableLayoutPanel root = Grid(1, 3);
+            root.Dock = DockStyle.None;
+            root.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            root.Location = new Point(0, 0);
+            root.MinimumSize = new Size(1000, 900);
             root.BackColor = P.Canvas;
             root.Padding = new Padding(24, 22, 24, 18);
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-            Controls.Add(root);
+            viewport.Controls.Add(root);
+            EventHandler fitRoot = delegate
+            {
+                int scrollbar = viewport.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0;
+                int w = Math.Max(root.MinimumSize.Width, viewport.ClientSize.Width - scrollbar);
+                int h = Math.Max(root.MinimumSize.Height, viewport.ClientSize.Height);
+                root.Size = new Size(w, h);
+            };
+            viewport.Resize += fitRoot;
 
             root.Controls.Add(BuildHero(), 0, 0);
 
@@ -164,6 +184,7 @@ namespace Firestone2Green
             AppendLog("头像资源: " + avatarPath);
             AppendLog("Firestone/Overwolf 路径: " + (string.IsNullOrEmpty(overwolfRoot) ? "未选择（运行时会自动搜索）" : overwolfRoot));
             AppendLog("推荐流程：先确认/搜索 Firestone 路径，再点击“一键重启并授权”；需要持久化时点击“安装持续修复”（只安装监听，不会主动启动 Firestone），以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
+            fitRoot(this, EventArgs.Empty);
         }
 
         protected override void OnResizeBegin(EventArgs e)
@@ -632,16 +653,19 @@ namespace Firestone2Green
             box.Radius = 20;
             box.Padding = new Padding(15, 14, 15, 14);
             g.Controls.Add(box, 0, 1);
-            logBox = new TextBox();
+            logBox = new HiddenWheelRichTextBox();
             logBox.Dock = DockStyle.Fill;
             logBox.Multiline = true;
-            logBox.ScrollBars = ScrollBars.None;
+            logBox.ScrollBars = RichTextBoxScrollBars.None;
             logBox.WordWrap = true;
             logBox.ReadOnly = true;
             logBox.BorderStyle = BorderStyle.None;
             logBox.BackColor = P.Console;
             logBox.ForeColor = P.ConsoleText;
             logBox.Font = new Font("Consolas", 10F);
+            logBox.DetectUrls = false;
+            logBox.HideSelection = false;
+            logBox.ShortcutsEnabled = true;
             box.Controls.Add(logBox);
 
             g.Controls.Add(L("完成后如果套牌/数据仍不刷新，点“恢复全功能网络”再点“验证状态”。", 8.8F, FontStyle.Regular, P.Faint), 0, 2);
@@ -1497,6 +1521,8 @@ namespace Firestone2Green
                 logBox.SelectionStart = logBox.TextLength;
             }
             logBox.AppendText(line + Environment.NewLine);
+            logBox.SelectionStart = logBox.TextLength;
+            logBox.ScrollToCaret();
             DetectAuthorizationSuccess(line);
             AppendFriendlyErrorExplanation(line);
         }
@@ -1540,10 +1566,12 @@ namespace Firestone2Green
 
             if (s.Contains("task scheduler service is not running") ||
                 s.Contains("windows 任务计划程序服务未运行") ||
+                s.Contains("windows 任务计划程序服务仍未运行") ||
+                s.Contains("task scheduler / 任务计划程序") ||
                 s.Contains("任务计划程序服务") && (s.Contains("未运行") || s.Contains("禁用") || s.Contains("schedule")))
             {
                 key = "task-scheduler-not-running";
-                message = "Windows 任务计划程序服务没有运行，所以无法安装“持续修复”和桌面静默启动快捷方式。通常是系统精简版或优化工具禁用了服务。请打开 services.msc，找到“Task Scheduler / 任务计划程序”，将启动类型设为“自动”并启动服务，然后重新点击“安装持续修复”。";
+                message = "Windows 任务计划程序服务没有运行，所以无法安装“持续修复”和桌面静默启动快捷方式。通常是系统精简版或优化工具禁用了服务。新版会尝试自动恢复；如果仍失败，请重启电脑后再试。还不行就打开 services.msc，找到“Task Scheduler / 任务计划程序”，将启动类型设为“自动”并启动服务。";
                 return true;
             }
 
@@ -1926,6 +1954,28 @@ namespace Firestone2Green
                 e.Graphics.DrawPath(p, path);
             }
             base.OnPaint(e);
+        }
+    }
+
+    public sealed class HiddenWheelRichTextBox : RichTextBox
+    {
+        private const int EM_LINESCROLL = 0x00B6;
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        public HiddenWheelRichTextBox()
+        {
+            ScrollBars = RichTextBoxScrollBars.None;
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            int wheelSteps = Math.Max(1, Math.Abs(e.Delta) / 120);
+            int lines = SystemInformation.MouseWheelScrollLines;
+            if (lines <= 0) lines = 3;
+            int deltaLines = (e.Delta > 0 ? -1 : 1) * lines * wheelSteps;
+            SendMessage(Handle, EM_LINESCROLL, IntPtr.Zero, new IntPtr(deltaLines));
         }
     }
 

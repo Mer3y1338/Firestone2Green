@@ -811,6 +811,14 @@ function Ensure-TaskSchedulerService {
     return
   }
 
+  $serviceInfo = $null
+  try {
+    $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='Schedule'" -ErrorAction SilentlyContinue
+    if ($serviceInfo) {
+      Write-Host "任务计划程序服务状态：State=$($serviceInfo.State), StartMode=$($serviceInfo.StartMode)"
+    }
+  } catch {}
+
   Write-Warning "任务计划程序服务当前状态：$($svc.Status)，正在尝试启动。"
   try {
     Start-Service -Name 'Schedule' -ErrorAction Stop
@@ -830,8 +838,20 @@ function Ensure-TaskSchedulerService {
   }
 
   try { $svc = Get-Service -Name 'Schedule' -ErrorAction Stop } catch {}
+  if ($svc -and $svc.Status -ne 'Running') {
+    try {
+      Write-Host '尝试写入注册表恢复 Schedule 启动类型为自动。'
+      Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Schedule' -Name 'Start' -Type DWord -Value 2 -ErrorAction Stop
+      & sc.exe start Schedule | Out-Host
+      Start-Sleep -Seconds 2
+    } catch {
+      Write-Warning "注册表恢复或 sc 启动失败：$($_.Exception.Message)"
+    }
+  }
+
+  try { $svc = Get-Service -Name 'Schedule' -ErrorAction Stop } catch {}
   if (-not $svc -or $svc.Status -ne 'Running') {
-    throw 'Windows 任务计划程序服务未运行，无法安装持续修复/静默启动任务。请打开 services.msc，找到“Task Scheduler / 任务计划程序”，将启动类型设为“自动”并启动服务；如果被精简系统或优化工具禁用，请恢复该服务后再点“安装持续修复”。'
+    throw 'Windows 任务计划程序服务仍未运行，无法安装持续修复/静默启动任务。程序已尝试自动启动并恢复 Schedule 启动类型。请重启电脑后再点“安装持续修复”；如果仍失败，请打开 services.msc，找到“Task Scheduler / 任务计划程序”，将启动类型设为“自动”并启动服务；精简系统可能需要恢复任务计划程序组件。'
   }
 
   Write-Host '任务计划程序服务已启动。'
