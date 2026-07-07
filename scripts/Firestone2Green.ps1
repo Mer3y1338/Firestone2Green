@@ -2024,11 +2024,11 @@ function Invoke-WatchFirestoneStartup {
       if (-not $evt) { continue }
       try {
         $eventProcess = $evt.SourceEventArgs.NewEvent
-        $pid = [int]$eventProcess.ProcessID
+        $eventPid = [int]$eventProcess.ProcessID
         $pname = [string]$eventProcess.ProcessName
         Remove-Event -EventIdentifier $evt.EventIdentifier -ErrorAction SilentlyContinue
-        if (Test-FirestoneStartupEvent -ProcessId $pid -ProcessName $pname -AppId $AppId) {
-          Invoke-WatchAuthOnce -State $State -Reason "$pname/$pid"
+        if (Test-FirestoneStartupEvent -ProcessId $eventPid -ProcessName $pname -AppId $AppId) {
+          Invoke-WatchAuthOnce -State $State -Reason "$pname/$eventPid"
         }
       } catch {
         Set-State $State 'lastWatchLoopError' $_.Exception.Message
