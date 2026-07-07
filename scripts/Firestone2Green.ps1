@@ -347,11 +347,11 @@ function Get-FirestoneVersionRoot {
   param([string]$AppId)
   $base = Join-Path $env:LOCALAPPDATA "Overwolf\Extensions\$AppId"
   if (-not (Test-Path -LiteralPath $base)) {
-    throw "未找到扩展目录：$base"
+    throw "未找到 Firestone 扩展目录：$base。可能只安装了 Overwolf（狼头），还没有安装 Firestone。请先在 Overwolf 中安装并正常打开一次 Firestone，等它下载完成后再运行 Firestone2Green。"
   }
   $dirs = Get-ChildItem -LiteralPath $base -Directory -ErrorAction Stop
   if (-not $dirs) {
-    throw "扩展目录下没有版本目录：$base"
+    throw "Firestone 扩展目录下没有版本目录：$base。可能 Firestone 还没下载/更新完成。请先正常打开一次 Firestone，等待 Overwolf 安装完成后再运行 Firestone2Green。"
   }
   # Prefer newest write time; version folder names are not guaranteed to be strict SemVer.
   return ($dirs | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
@@ -873,8 +873,13 @@ sh.Run "schtasks.exe /Run /TN ""$escapedTask""", 0, False
   $shortcut.WorkingDirectory = $scriptDir
   $shortcut.Description = '通过 Firestone2Green 静默启动 Firestone，并自动完成本地授权与网络恢复'
   try {
-    $launcherIcon = Join-Path $OverwolfRoot 'OverwolfLauncher.exe'
-    if (Test-Path -LiteralPath $launcherIcon) { $shortcut.IconLocation = $launcherIcon }
+    $firestoneIcon = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "Overwolf\AppShortcutIcons\$AppId.ico"
+    if (Test-Path -LiteralPath $firestoneIcon -PathType Leaf) {
+      $shortcut.IconLocation = "$firestoneIcon,0"
+    } else {
+      $launcherIcon = Join-Path $OverwolfRoot 'OverwolfLauncher.exe'
+      if (Test-Path -LiteralPath $launcherIcon -PathType Leaf) { $shortcut.IconLocation = "$launcherIcon,0" }
+    }
   } catch {}
   $shortcut.Save()
   Write-Host "快捷方式已创建：$shortcutPath"
@@ -1403,6 +1408,7 @@ async function main(){
   $result = $best.result
   Set-State $State 'authResult' $result
   Write-Host "授权状态：hasPremium=$($result.result.hasPremium), enablePremium=$($result.result.enablePremium), shouldDisplayAds=$($result.result.shouldDisplayAds), windows=$($successes.Count)"
+  Write-Host '已成功授权：Firestone 本地授权状态已生效。'
   try {
     Invoke-FirestoneAvatarPatch -State $State -Port $Port -AppId $AppId -ImagePath $AvatarImagePath
   } catch {
@@ -1677,6 +1683,103 @@ function Get-FirestoneAppProcesses {
   return @($rows)
 }
 
+function Test-AutomationServerReady {
+  param([int]$Port)
+  try {
+    $result = Invoke-AutomationCommand -Port $Port -CommandId 'pingServer' -CommandArgs @{}
+    return [bool]($result.success)
+  } catch {
+    return $false
+  }
+}
+
+function Start-FirestoneLaunchWithFallback {
+  param(
+    [System.Collections.IDictionary]$State,
+    [string]$Launcher,
+    [int]$Port
+  )
+
+  $attempts = @()
+  $candidates = @(
+    [pscustomobject]@{
+      Name = '兼容旧式启动：-launchapp -from-desktop + automation'
+      Args = @('-launchapp', $AppId, '-from-desktop', '--automation', "$Port", '--enable-automation')
+      TimeoutSeconds = 30
+    },
+    [pscustomobject]@{
+      Name = '新版启动：--launchapp --origin desktop + automation'
+      Args = @('--launchapp', $AppId, '--origin', 'desktop', '--automation', "$Port", '--enable-automation')
+      TimeoutSeconds = 30
+    },
+    [pscustomobject]@{
+      Name = '混合启动：-launchapp --origin desktop + automation'
+      Args = @('-launchapp', $AppId, '--origin', 'desktop', '--automation', "$Port", '--enable-automation')
+      TimeoutSeconds = 20
+    }
+  )
+
+  for ($i = 0; $i -lt $candidates.Count; $i++) {
+    $candidate = $candidates[$i]
+    Write-Step ("启动方式 {0}/{1}：{2}" -f ($i + 1), $candidates.Count, $candidate.Name)
+    $record = [ordered]@{
+      index = ($i + 1)
+      name = $candidate.Name
+      args = ($candidate.Args -join ' ')
+      startedAt = (Get-Date).ToString('o')
+      automationReady = $false
+      firestoneProcessCount = 0
+    }
+    $recordAdded = $false
+    try {
+      Start-Process -FilePath $Launcher -ArgumentList $candidate.Args
+      $deadline = (Get-Date).AddSeconds([int]$candidate.TimeoutSeconds)
+      do {
+        if (Test-AutomationServerReady -Port $Port) {
+          $record['automationReady'] = $true
+          $record['completedAt'] = (Get-Date).ToString('o')
+          $attempts += [pscustomobject]$record
+          $recordAdded = $true
+          Set-State $State 'launchAttempts' $attempts
+          Set-State $State 'selectedLaunchMode' $candidate.Name
+          Write-Host 'automation 接口可用。'
+          return $candidate.Name
+        }
+        Start-Sleep -Milliseconds 500
+      } while ((Get-Date) -lt $deadline)
+
+      $running = @(Get-FirestoneAppProcesses -AppId $AppId)
+      $record['firestoneProcessCount'] = $running.Count
+      $record['error'] = "automation 接口未在 $($candidate.TimeoutSeconds) 秒内可用"
+      Write-Warning ("{0} 未打开 automation，准备切换下一种启动方式。" -f $candidate.Name)
+    } catch {
+      $record['error'] = $_.Exception.Message
+      Write-Warning ("{0} 启动失败：{1}" -f $candidate.Name, $_.Exception.Message)
+    } finally {
+      if (-not $record.Contains('completedAt')) { $record['completedAt'] = (Get-Date).ToString('o') }
+      if (-not $recordAdded) {
+        $attempts += [pscustomobject]$record
+        Set-State $State 'launchAttempts' $attempts
+      }
+    }
+
+    if (($i -lt ($candidates.Count - 1)) -and -not $NoKill) {
+      Write-Host '清理上一次未成功开启 automation 的 Overwolf/Firestone 进程后重试。'
+      Stop-OverwolfProcesses | Out-Null
+      Start-Sleep -Seconds 2
+    }
+  }
+
+  Write-Warning '所有 automation 启动方式都失败，改用普通方式打开 Firestone，避免快捷方式看起来“无响应”。'
+  try {
+    Start-Process -FilePath $Launcher -ArgumentList @('-launchapp', $AppId, '-from-desktop')
+  } catch {
+    Write-Warning "普通启动也失败：$($_.Exception.Message)"
+  }
+  Set-State $State 'automationAvailable' $false
+  throw 'automation 接口不可用：已尝试旧式/新版/混合启动参数。请先确认 Firestone 已在 Overwolf 中安装并能正常打开；升级后如已安装持续修复，请先“移除持续修复”再“安装持续修复”。'
+}
+
 function Start-FirestoneWithAutomation {
   param(
     [System.Collections.IDictionary]$State,
@@ -1689,8 +1792,7 @@ function Start-FirestoneWithAutomation {
     Set-State $State 'autoRestartStopped' (Stop-OverwolfProcesses)
   }
   Write-Step "启动 Firestone，并开启本地 automation 端口 $AutomationPort"
-  Start-Process -FilePath $launcher -ArgumentList @('--launchapp', $AppId, '--origin', 'desktop', '--automation', "$AutomationPort", '--enable-automation')
-  Wait-AutomationServer -Port $AutomationPort -TimeoutSeconds 45 | Out-Null
+  Start-FirestoneLaunchWithFallback -State $State -Launcher $launcher -Port $AutomationPort | Out-Null
   Start-Sleep -Seconds 3
   Set-AuthOnlyOnlineNetwork -State $State
   Invoke-FirestoneRuntimeAuth -State $State -Port $AutomationPort -AppId $AppId -PlanId $AuthPlanId

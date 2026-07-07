@@ -55,9 +55,10 @@ namespace Firestone2Green
         private const string ScriptResourceName = "Firestone2Green.ps1";
         private const string AvatarResourceName = "Firestone2GreenAvatar.jpg";
         private const string ConfigFileName = "config.ini";
+        private const string DisclaimerFileName = "disclaimer.ok";
         private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
         private const string OverwolfMainFile = "Overwolf.exe";
-        private const string AppVersion = "0.1.3";
+        private const string AppVersion = "0.1.5";
         private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
         private const string LatestReleasePageUrl = "https://github.com/Mer3y1338/Firestone2Green/releases/latest";
         private readonly string baseDir;
@@ -66,6 +67,7 @@ namespace Firestone2Green
         private readonly string avatarPath;
         private readonly string iconPath;
         private readonly string configPath;
+        private readonly string disclaimerPath;
         private string overwolfRoot;
         private TextBox logBox;
         private TextBox overwolfRootBox;
@@ -78,6 +80,7 @@ namespace Firestone2Green
         private NumberStepper monitorSecondsBox;
         private NiceButton[] runButtons;
         private readonly HashSet<string> explainedLogErrors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private volatile bool authSuccessSeen;
         private volatile bool running;
 
         public MainForm()
@@ -88,6 +91,7 @@ namespace Firestone2Green
             avatarPath = ResolveAvatarPath(Path.Combine(baseDir, "assets", "avatar.jpg"));
             iconPath = Path.Combine(baseDir, "assets", "app.ico");
             configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Firestone2Green", ConfigFileName);
+            disclaimerPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Firestone2Green", DisclaimerFileName);
             overwolfRoot = LoadConfiguredOverwolfRoot();
             if (string.IsNullOrEmpty(overwolfRoot)) overwolfRoot = FindOverwolfRoot(false);
             BuildUi();
@@ -97,6 +101,7 @@ namespace Firestone2Green
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            ShowDisclaimerIfFirstRun();
             BeginCheckForUpdates();
         }
 
@@ -115,6 +120,8 @@ namespace Firestone2Green
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = P.Canvas;
             Font = new Font("Microsoft YaHei UI", 9F);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleDimensions = new SizeF(96F, 96F);
             DoubleBuffered = true;
 
             TableLayoutPanel root = Grid(1, 3);
@@ -137,11 +144,20 @@ namespace Firestone2Green
             main.Controls.Add(BuildLeft(), 0, 0);
             main.Controls.Add(BuildRight(), 1, 0);
 
+            TableLayoutPanel footerGrid = Grid(2, 1);
+            footerGrid.ColumnStyles.Clear();
+            footerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 78));
+            footerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 22));
             Label footer = L("本地运行 · 不修改 Firestone 签名文件 · 更新后重新执行一次即可" + Environment.NewLine +
                              "本程序完全免费，只在 GitHub 上发布；任何付费购买的就是被骗了。如果帮到你，可以的话帮我点一个 Star，这对我很有帮助。", 8.5F, FontStyle.Regular, P.Faint);
             footer.TextAlign = ContentAlignment.MiddleLeft;
             footer.AutoEllipsis = false;
-            root.Controls.Add(footer, 0, 2);
+            Label version = L("v" + AppVersion, 8.5F, FontStyle.Bold, P.Faint);
+            version.TextAlign = ContentAlignment.BottomRight;
+            version.AutoEllipsis = false;
+            footerGrid.Controls.Add(footer, 0, 0);
+            footerGrid.Controls.Add(version, 1, 0);
+            root.Controls.Add(footerGrid, 0, 2);
 
             AppendLog("项目目录: " + baseDir);
             AppendLog("脚本路径: " + scriptPath);
@@ -287,6 +303,22 @@ namespace Firestone2Green
                     ShowUpdateCheckFailed();
                 }
             });
+        }
+
+        private void ShowDisclaimerIfFirstRun()
+        {
+            try
+            {
+                if (File.Exists(disclaimerPath)) return;
+                MessageBox.Show(this,
+                    "本项目仅用于交流学习，有能力者请多多支持正版",
+                    "使用提醒",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                Directory.CreateDirectory(Path.GetDirectoryName(disclaimerPath));
+                File.WriteAllText(disclaimerPath, "shown=" + DateTime.Now.ToString("o") + Environment.NewLine, Encoding.UTF8);
+            }
+            catch { }
         }
 
         private UpdateInfo FetchLatestRelease()
@@ -739,10 +771,11 @@ namespace Firestone2Green
             string rootForRun = GetOverwolfRootForRun(false);
             if (string.IsNullOrEmpty(rootForRun) && (mode == "LaunchAuth" || mode == "Launch" || mode == "InstallAutoAuthTask"))
             {
-                AppendLog("未找到 OverwolfLauncher.exe。请点击“自动搜索”或“选择路径”，选择 OverwolfLauncher.exe 所在目录后再执行。");
+                AppendLog("未找到 Overwolf 启动器。请点击“自动搜索”或“选择路径”，选择 OverwolfLauncher.exe 或 Overwolf.exe 所在目录后再执行。");
                 return;
             }
             Directory.CreateDirectory(reportDir);
+            authSuccessSeen = false;
             string args = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(scriptPath) + " -Mode " + mode + " -AutomationPort 18765";
             if (!string.IsNullOrEmpty(rootForRun)) args += " -OverwolfRoot " + Quote(rootForRun);
             if (File.Exists(avatarPath)) args += " -AvatarImagePath " + Quote(avatarPath);
@@ -782,11 +815,26 @@ namespace Firestone2Green
                         exitCode = proc.ExitCode;
                     }
                     AppendLog("===== 完成，退出码 " + exitCode.ToString() + " =====");
-                    if (exitCode == 0) AppendLog("报告目录: " + reportDir);
+                    if (exitCode == 0)
+                    {
+                        if (IsAuthorizationMode(mode))
+                        {
+                            authSuccessSeen = true;
+                            AppendLog("✅ 已成功授权。可以进入 Firestone / 游戏内检查功能是否恢复。");
+                        }
+                        AppendLog("报告目录: " + reportDir);
+                    }
                 }
                 catch (Exception ex) { AppendLog("执行失败: " + ex); }
-                finally { SetRunning(false, exitCode == 0 ? "就绪" : "任务结束，请查看日志"); }
+                finally { SetRunning(false, exitCode == 0 && authSuccessSeen ? "已成功授权" : (exitCode == 0 ? "就绪" : "任务结束，请查看日志")); }
             });
+        }
+
+        private bool IsAuthorizationMode(string mode)
+        {
+            return string.Equals(mode, "LaunchAuth", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(mode, "Auth", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(mode, "AutoAuth", StringComparison.OrdinalIgnoreCase);
         }
 
         private void RefreshPathLabel(bool save)
@@ -829,7 +877,7 @@ namespace Firestone2Green
             root = NormalizeOverwolfRoot(input);
             if (string.IsNullOrEmpty(root) && deepIfMissing)
             {
-                AppendLog("正在自动搜索 OverwolfLauncher.exe...");
+                AppendLog("正在自动搜索 OverwolfLauncher.exe / Overwolf.exe...");
                 root = FindOverwolfRoot(true);
             }
             if (!string.IsNullOrEmpty(root))
@@ -865,7 +913,7 @@ namespace Firestone2Green
                     string found = FindOverwolfRoot(true);
                     if (string.IsNullOrEmpty(found))
                     {
-                        AppendLog("未自动找到 OverwolfLauncher.exe。请点击“选择路径”手动选择 Overwolf 安装目录。");
+                        AppendLog("未自动找到 OverwolfLauncher.exe / Overwolf.exe。请点击“选择路径”手动选择 Overwolf 安装目录。");
                         if (InvokeRequired) BeginInvoke(new Action<bool, string>(SetRunning), false, "路径待选择");
                         else SetRunning(false, "路径待选择");
                         return;
@@ -1430,9 +1478,10 @@ namespace Firestone2Green
             if (selectPathButton != null) selectPathButton.Enabled = !value;
             if (overwolfRootBox != null) overwolfRootBox.ReadOnly = value;
             string s = value ? "运行中：" + (status.Length > 14 ? status.Substring(0, 14) + "..." : status) : status;
+            bool success = !value && string.Equals(status, "已成功授权", StringComparison.OrdinalIgnoreCase);
             statusPill.Text = s;
-            statusPill.Fill = value ? P.ClaySoft : P.Soft;
-            statusPill.ForeColor = value ? P.Clay : P.Muted;
+            statusPill.Fill = value ? P.ClaySoft : (success ? P.SageSoft : P.Soft);
+            statusPill.ForeColor = value ? P.Clay : (success ? P.Sage : P.Muted);
             statusPill.Invalidate();
         }
 
@@ -1448,7 +1497,27 @@ namespace Firestone2Green
                 logBox.SelectionStart = logBox.TextLength;
             }
             logBox.AppendText(line + Environment.NewLine);
+            DetectAuthorizationSuccess(line);
             AppendFriendlyErrorExplanation(line);
+        }
+
+        private void DetectAuthorizationSuccess(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            if (line.IndexOf("授权已注入窗口", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("已成功授权", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("hasPremium=True", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("authEffective", StringComparison.OrdinalIgnoreCase) >= 0 && line.IndexOf("true", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                authSuccessSeen = true;
+                if (statusPill != null)
+                {
+                    statusPill.Text = "已成功授权";
+                    statusPill.Fill = P.SageSoft;
+                    statusPill.ForeColor = P.Sage;
+                    statusPill.Invalidate();
+                }
+            }
         }
 
         private void AppendFriendlyErrorExplanation(string line)
@@ -1485,11 +1554,19 @@ namespace Firestone2Green
                 return true;
             }
 
+            if (s.Contains("未找到 firestone 扩展目录") || s.Contains("扩展目录下没有版本目录") ||
+                s.Contains("还没有安装 firestone") || s.Contains("firestone 还没下载"))
+            {
+                key = "firestone-extension-missing";
+                message = "当前机器可能只装了 Overwolf（狼头），还没有装好 Firestone 本体。请先在 Overwolf 里安装并正常打开一次 Firestone，等它下载/更新完成后，再运行本工具。";
+                return true;
+            }
+
             if (s.Contains("automation 接口未") || s.Contains("localhost:18765") ||
                 s.Contains("pingserver") || s.Contains("automation") && (s.Contains("timeout") || s.Contains("超时") || s.Contains("不可用")))
             {
                 key = "automation-unavailable";
-                message = "Overwolf 本地 automation 接口没有连上。常见原因是 Firestone 没用本工具启动、Overwolf 启动太慢、旧进程残留或安全软件拦截本地端口。建议关闭 Overwolf/Firestone 后重新点“一键重启并授权”。";
+                message = "Overwolf 本地 automation 接口没有连上。常见原因是 Firestone 没用本工具启动、Overwolf 启动太慢、旧进程残留、安全软件拦截本地端口，或旧版持续修复仍在使用不兼容的启动参数。建议关闭 Overwolf/Firestone 后重新点“一键重启并授权”；升级后请先“移除持续修复”再“安装持续修复”。";
                 return true;
             }
 

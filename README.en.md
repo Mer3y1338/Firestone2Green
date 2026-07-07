@@ -34,13 +34,15 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 - **Dedicated launch shortcut**: Creates a desktop shortcut named `Firestone2Green 启动 Firestone` for daily silent startup.
 - **Automatic update check**: Checks GitHub Releases on startup and shows the result in the top-right status area; network failures show an update-check warning.
 - **Friendly error explanations**: The log now adds short explanations and suggested fixes for common errors.
+- **First-run disclaimer**: Shows a short learning-only / support-official disclaimer on first launch.
+- **High-DPI support and version display**: Adds DPI-aware manifest settings and a bottom-right version label.
 - **Stable data loading**: Switches to `AuthOnlyOnline` before starting Firestone, so deck data, meta data, and tracker data can load normally.
 
 ## Quick Start
 
 1. Download `Firestone2Green.exe` from GitHub Releases.
 2. Right-click `Firestone2Green.exe` and choose **Run as administrator**.
-3. Confirm the **路径设置** field. If it is not detected automatically, click **自动搜索** or **选择路径** and choose the Overwolf root folder — the folder where `OverwolfLauncher.exe` or `Overwolf.exe` is directly visible. If a child or parent folder is selected, the app shows the correct location.
+3. Confirm the **路径设置** field. If it is not detected automatically, click **自动搜索** or **选择路径** and choose the Overwolf root folder — the folder where `OverwolfLauncher.exe` or `Overwolf.exe` is directly visible. If a child or parent folder is selected, the app shows the correct location. If the user has only installed Overwolf but not Firestone yet, install and open Firestone once from Overwolf first.
 4. Click **一键重启并授权**.
 5. Wait until the log shows exit code `0`.
 6. Click **验证状态** to confirm the network mode and authorization status.
@@ -82,7 +84,7 @@ The task runs these steps:
 1. Verifies local Firestone file integrity.
 2. Clears abnormal caches and old processes.
 3. Switches to `AuthOnlyOnline` before launching Firestone, so deck data, meta data, and tracker data can load from the network.
-4. Starts Firestone with the local automation port enabled.
+4. Starts Firestone with a compatibility fallback: old-style `-launchapp -from-desktop + automation` first, then new-style `--launchapp --origin desktop + automation`, so different Overwolf install sources are handled.
 5. Waits for the Firestone background window and main window authorization services to initialize.
 6. Repairs the local authorization state in both the background window and the main window.
 7. Repairs the bottom-left login avatar.
@@ -93,11 +95,17 @@ The task runs these steps:
 
 After automatic authorization succeeds, premium-gated entries in the main window, such as My Decks, Meta Decks, Meta Archetypes, Statistics, Ranks, and Deck Building, should become available.
 
+### Why can the shortcut appear to do nothing after installing Firestone from inside Overwolf?
+
+Different Overwolf installation sources do not always accept the same launch arguments. Some environments only reliably accept the old `-launchapp <AppId> -from-desktop` form, while others accept the newer `--launchapp <AppId> --origin desktop` form. Older Firestone2Green builds used one launch form, so the silent shortcut could look like it did nothing on some machines.
+
+The current build tries multiple launch forms in order: old-style + automation, new-style + automation, and mixed arguments. If automation still cannot be opened, it falls back to a normal Firestone launch and logs the reason. After upgrading, reinstall persistent repair so the shortcut uses the updated script.
+
 If the shortcut does not appear to authorize automatically:
 
 1. Wait at least `60` seconds.
 2. Make sure you launched Firestone through the desktop shortcut **Firestone2Green 启动 Firestone**, not the original Firestone icon.
-3. Run `Firestone2Green.exe` as administrator and click **安装持续修复** to reinstall the shortcut and background tasks.
+3. If you upgraded Firestone2Green recently, run `Firestone2Green.exe` as administrator, click **移除持续修复**, then **安装持续修复** so the shortcut and background tasks use the new script.
 4. Click **一键重启并授权** to immediately restart and repair authorization.
 5. Click **验证状态** and confirm the report shows `NetworkMode = AuthOnlyOnline`.
 

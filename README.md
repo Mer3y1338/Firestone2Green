@@ -32,13 +32,15 @@
 - **快捷方式启动**：可创建桌面快捷方式 `Firestone2Green 启动 Firestone`，用于日常无弹窗启动。
 - **自动更新检查**：启动后自动对比 GitHub Releases，右上角提示是否已是最新版；网络不可用时会提示更新检查失败。
 - **日志错误解释**：运行日志遇到常见错误时会自动追加简单原因和处理建议，方便普通用户排查。
+- **首次启动免责声明**：首次打开会提醒“本项目仅用于交流学习，有能力者请多多支持正版”。
+- **高 DPI 适配与版本显示**：适配高分辨率屏幕，并在右下角显示当前版本号。
 - **数据稳定**：启动前恢复 AuthOnlyOnline 网络，避免套牌 / 环境数据在启动断网窗口里加载失败。
 
 ## 快速开始
 
 1. 从 GitHub Releases 下载 `Firestone2Green.exe`。
 2. 右键 `Firestone2Green.exe`，选择 **以管理员身份运行**。
-3. 在 **路径设置** 区域确认路径；如果没有自动识别，点击 **自动搜索** 或 **选择路径**，选择 Overwolf 根目录（打开后能直接看到 `OverwolfLauncher.exe` 或 `Overwolf.exe` 的那一层目录）。选到子目录或上级目录时程序会弹窗提示正确位置。
+3. 在 **路径设置** 区域确认路径；如果没有自动识别，点击 **自动搜索** 或 **选择路径**，选择 Overwolf 根目录（打开后能直接看到 `OverwolfLauncher.exe` 或 `Overwolf.exe` 的那一层目录）。选到子目录或上级目录时程序会弹窗提示正确位置。若用户只安装了 Overwolf（狼头）但还没安装 Firestone，请先在 Overwolf 中安装并正常打开一次 Firestone。
 4. 点击 **一键重启并授权**。
 5. 等待日志显示退出码 `0`。
 6. 点击 **验证状态**，确认网络模式与授权状态正常。
@@ -80,7 +82,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 1. 校验 Firestone 本地文件完整性。
 2. 清理异常缓存和旧进程。
 3. 在 Firestone 启动前切换到 `AuthOnlyOnline` 网络模式，保证套牌、环境数据和记牌器数据可以正常联网加载。
-4. 使用 automation 端口启动 Firestone。
+4. 使用兼容启动回退打开 Firestone：优先尝试旧式 `-launchapp -from-desktop + automation`，再尝试新版 `--launchapp --origin desktop + automation`，以适配不同来源安装的 Overwolf。
 5. 等待 Firestone 后台窗口和主窗口授权服务初始化。
 6. 同时补齐后台窗口与主窗口的本地授权状态。
 7. 修复左下角登录头像。
@@ -91,11 +93,17 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 
 自动授权成功后，主窗口中的会员锁、我的套牌、环境套牌、环境套牌类型、统计数据、等级和构筑套牌等依赖授权的入口应恢复可用。
 
+### 为什么“先装 Overwolf，再从里面安装 Firestone”的用户点击快捷方式没反应？
+
+不同来源安装的 Overwolf 对启动参数的兼容性不完全一致：部分环境只稳定接受旧式 `-launchapp <AppId> -from-desktop`，部分环境接受新版 `--launchapp <AppId> --origin desktop`。旧版本只使用单一新版参数，所以某些用户会看到桌面快捷方式静默触发后没有明显反应。
+
+新版已加入多启动方式回退：旧式 + automation、新版 + automation、混合参数都会依次尝试；如果 automation 仍不可用，也会尝试普通方式打开 Firestone，并在日志里提示原因。升级后请重新安装持续修复，让快捷方式指向新版脚本。
+
 如果点击快捷方式后没有自动授权：
 
 1. 等待至少 `60` 秒。
 2. 确认是通过桌面的 **Firestone2Green 启动 Firestone** 快捷方式启动，而不是原始 Firestone 图标。
-3. 管理员运行 `Firestone2Green.exe`，点击 **安装持续修复** 重新安装快捷方式和后台任务。
+3. 如果刚升级过 Firestone2Green，管理员运行 `Firestone2Green.exe`，先点 **移除持续修复**，再点 **安装持续修复**，确保桌面快捷方式和后台任务使用新版脚本。
 4. 点击 **一键重启并授权** 立即重启并补授权。
 5. 点击 **验证状态**，确认报告中显示 `NetworkMode = AuthOnlyOnline`。
 
