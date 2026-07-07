@@ -14,7 +14,7 @@
 
 一键完成 **本地授权修复、左下角登录头像修复、全功能网络恢复、静默持续修复任务安装**，适合需要快速恢复 Firestone 本地运行环境的普通用户。
 
-[⬇️ 下载最新版 Firestone2Green.exe](https://github.com/Mer3y1338/Firestone2Green/releases/latest) · [English README](README.en.md) · [使用教程](docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md)
+[⬇️ 下载最新版 Firestone2Green_v???.exe](https://github.com/Mer3y1338/Firestone2Green/releases/latest) · [English README](README.en.md) · [使用教程](docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md)
 
 </div>
 
@@ -38,8 +38,8 @@
 
 ## 快速开始
 
-1. 从 GitHub Releases 下载 `Firestone2Green.exe`。
-2. 右键 `Firestone2Green.exe`，选择 **以管理员身份运行**。
+1. 从 GitHub Releases 下载 `Firestone2Green_v???.exe`。
+2. 右键 `Firestone2Green_v???.exe`，选择 **以管理员身份运行**。
 3. 在 **路径设置** 区域确认路径；如果没有自动识别，点击 **自动搜索** 或 **选择路径**，选择 Overwolf 根目录（打开后能直接看到 `OverwolfLauncher.exe` 或 `Overwolf.exe` 的那一层目录）。选到子目录或上级目录时程序会弹窗提示正确位置。若用户只安装了 Overwolf（狼头）但还没安装 Firestone，请先在 Overwolf 中安装并正常打开一次 Firestone。
 4. 点击 **一键重启并授权**。
 5. 等待日志显示退出码 `0`。
@@ -103,7 +103,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 
 1. 等待至少 `60` 秒。
 2. 确认是通过桌面的 **Firestone2Green 启动 Firestone** 快捷方式启动，而不是原始 Firestone 图标。
-3. 如果刚升级过 Firestone2Green，管理员运行 `Firestone2Green.exe`，先点 **移除持续修复**，再点 **安装持续修复**，确保桌面快捷方式和后台任务使用新版脚本。
+3. 如果刚升级过 Firestone2Green，管理员运行 `Firestone2Green_v???.exe`，先点 **移除持续修复**，再点 **安装持续修复**，确保桌面快捷方式和后台任务使用新版脚本。
 4. 点击 **一键重启并授权** 立即重启并补授权。
 5. 点击 **验证状态**，确认报告中显示 `NetworkMode = AuthOnlyOnline`。
 
@@ -112,16 +112,16 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 推荐给普通用户分发 GitHub Releases 中的单文件 EXE：
 
 ```text
-Firestone2Green.exe
+Firestone2Green_v???.exe
 ```
 
 也可以分发完整压缩包：
 
 ```text
-Firestone2Green_dist.zip
+Firestone2Green_v???_dist.zip
 ```
 
-`Firestone2Green.exe` 已内置：
+`Firestone2Green_v???.exe` 已内置：
 
 - `scripts/Firestone2Green.ps1`
 - `assets/avatar.jpg`
@@ -129,7 +129,7 @@ Firestone2Green_dist.zip
 
 因此在常规使用场景下，用户不需要额外携带 `.ps1` 文件或头像文件。
 
-单独分发 `Firestone2Green.exe` 时，程序首次运行会自动释放内置脚本和默认头像资源；如果目录里没有 `assets/avatar.jpg`，会使用 EXE 内置头像并写入本地运行目录，保证其他用户也能完成左下角登录头像替换。
+单独分发 `Firestone2Green_v???.exe` 时，程序首次运行会自动释放内置脚本和默认头像资源；如果目录里没有 `assets/avatar.jpg`，会使用 EXE 内置头像并写入本地运行目录，保证其他用户也能完成左下角登录头像替换。
 
 ## 仓库结构
 
@@ -157,7 +157,7 @@ Firestone2Green/
 
 ### 可以只发送 EXE 给其他用户吗？
 
-可以。`Firestone2Green.exe` 已经内置脚本、头像和图标，普通用户只需要这个 EXE。
+可以。`Firestone2Green_v???.exe` 已经内置脚本、头像和图标，普通用户只需要这个 EXE。
 
 ### 重启电脑后还需要手动授权吗？
 

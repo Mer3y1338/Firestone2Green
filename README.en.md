@@ -14,7 +14,7 @@
 
 It helps restore **local authorization, the bottom-left login avatar, full network access, and silent scheduled-task maintenance** for users who need to quickly repair their Firestone local runtime environment.
 
-[⬇️ Download the latest Firestone2Green.exe](https://github.com/Mer3y1338/Firestone2Green/releases/latest) · [中文说明](README.md) · [User Guide](docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md)
+[⬇️ Download the latest Firestone2Green_vVERSION.exe](https://github.com/Mer3y1338/Firestone2Green/releases/latest) · [中文说明](README.md) · [User Guide](docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md)
 
 </div>
 
@@ -40,8 +40,8 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 
 ## Quick Start
 
-1. Download `Firestone2Green.exe` from GitHub Releases.
-2. Right-click `Firestone2Green.exe` and choose **Run as administrator**.
+1. Download `Firestone2Green_vVERSION.exe` from GitHub Releases.
+2. Right-click `Firestone2Green_vVERSION.exe` and choose **Run as administrator**.
 3. Confirm the **路径设置** field. If it is not detected automatically, click **自动搜索** or **选择路径** and choose the Overwolf root folder — the folder where `OverwolfLauncher.exe` or `Overwolf.exe` is directly visible. If a child or parent folder is selected, the app shows the correct location. If the user has only installed Overwolf but not Firestone yet, install and open Firestone once from Overwolf first.
 4. Click **一键重启并授权**.
 5. Wait until the log shows exit code `0`.
@@ -105,7 +105,7 @@ If the shortcut does not appear to authorize automatically:
 
 1. Wait at least `60` seconds.
 2. Make sure you launched Firestone through the desktop shortcut **Firestone2Green 启动 Firestone**, not the original Firestone icon.
-3. If you upgraded Firestone2Green recently, run `Firestone2Green.exe` as administrator, click **移除持续修复**, then **安装持续修复** so the shortcut and background tasks use the new script.
+3. If you upgraded Firestone2Green recently, run `Firestone2Green_vVERSION.exe` as administrator, click **移除持续修复**, then **安装持续修复** so the shortcut and background tasks use the new script.
 4. Click **一键重启并授权** to immediately restart and repair authorization.
 5. Click **验证状态** and confirm the report shows `NetworkMode = AuthOnlyOnline`.
 
@@ -114,16 +114,16 @@ If the shortcut does not appear to authorize automatically:
 For regular users, distribute the single-file EXE from GitHub Releases:
 
 ```text
-Firestone2Green.exe
+Firestone2Green_vVERSION.exe
 ```
 
 A full archive can also be distributed:
 
 ```text
-Firestone2Green_dist.zip
+Firestone2Green_vVERSION_dist.zip
 ```
 
-`Firestone2Green.exe` embeds:
+`Firestone2Green_vVERSION.exe` embeds:
 
 - `scripts/Firestone2Green.ps1`
 - `assets/avatar.jpg`
@@ -131,7 +131,7 @@ Firestone2Green_dist.zip
 
 In normal use, users do not need to carry an extra `.ps1` file or avatar file.
 
-When only `Firestone2Green.exe` is distributed, the program extracts the embedded script and default avatar resource on first run. If `assets/avatar.jpg` is not present next to the program, the embedded avatar is used and written into the local runtime directory, so other users can still get the bottom-left login avatar replacement.
+When only `Firestone2Green_vVERSION.exe` is distributed, the program extracts the embedded script and default avatar resource on first run. If `assets/avatar.jpg` is not present next to the program, the embedded avatar is used and written into the local runtime directory, so other users can still get the bottom-left login avatar replacement.
 
 ## Repository Layout
 
@@ -164,7 +164,7 @@ The following files are local maintenance / release artifacts and are not tracke
 - `build.ps1`
 - `build.cmd`
 - `dist/`
-- `Firestone2Green_dist.zip`
+- `Firestone2Green_vVERSION_dist.zip`
 
 Release builds are created locally by the maintainer and then uploaded to GitHub Releases.
 
@@ -172,7 +172,7 @@ Release builds are created locally by the maintainer and then uploaded to GitHub
 
 ### Can I send only the EXE to other users?
 
-Yes. `Firestone2Green.exe` embeds the script, avatar, and icon. Regular users only need this EXE.
+Yes. `Firestone2Green_vVERSION.exe` embeds the script, avatar, and icon. Regular users only need this EXE.
 
 ### Do I need to authorize manually after reboot?
 

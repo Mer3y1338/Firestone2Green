@@ -59,7 +59,7 @@ namespace Firestone2Green
         private const string DisclaimerFileName = "disclaimer.ok";
         private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
         private const string OverwolfMainFile = "Overwolf.exe";
-        private const string AppVersion = "0.1.7";
+        private const string AppVersion = "0.1.8";
         private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
         private const string LatestReleasePageUrl = "https://github.com/Mer3y1338/Firestone2Green/releases/latest";
         private readonly string baseDir;
@@ -70,6 +70,9 @@ namespace Firestone2Green
         private readonly string configPath;
         private readonly string disclaimerPath;
         private string overwolfRoot;
+        private Panel viewportPanel;
+        private TableLayoutPanel rootLayout;
+        private bool resizeRedrawFrozen;
         private RichTextBox logBox;
         private TextBox overwolfRootBox;
         private Label updateMetricLabel;
@@ -83,6 +86,12 @@ namespace Firestone2Green
         private readonly HashSet<string> explainedLogErrors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private volatile bool authSuccessSeen;
         private volatile bool running;
+        private const int WM_SETREDRAW = 0x000B;
+        private const int WM_ENTERSIZEMOVE = 0x0231;
+        private const int WM_EXITSIZEMOVE = 0x0232;
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         public MainForm()
         {
@@ -126,33 +135,26 @@ namespace Firestone2Green
             AutoScroll = false;
             DoubleBuffered = true;
 
-            Panel viewport = new Panel();
-            viewport.Dock = DockStyle.Fill;
-            viewport.AutoScroll = true;
-            viewport.BackColor = P.Canvas;
-            Controls.Add(viewport);
+            viewportPanel = new Panel();
+            viewportPanel.Dock = DockStyle.Fill;
+            viewportPanel.AutoScroll = true;
+            viewportPanel.BackColor = P.Canvas;
+            Controls.Add(viewportPanel);
 
-            TableLayoutPanel root = Grid(1, 3);
-            root.Dock = DockStyle.None;
-            root.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-            root.Location = new Point(0, 0);
-            root.MinimumSize = new Size(1000, 900);
-            root.BackColor = P.Canvas;
-            root.Padding = new Padding(24, 22, 24, 18);
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 184));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-            viewport.Controls.Add(root);
-            EventHandler fitRoot = delegate
-            {
-                int scrollbar = viewport.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0;
-                int w = Math.Max(root.MinimumSize.Width, viewport.ClientSize.Width - scrollbar);
-                int h = Math.Max(root.MinimumSize.Height, viewport.ClientSize.Height);
-                root.Size = new Size(w, h);
-            };
-            viewport.Resize += fitRoot;
+            rootLayout = Grid(1, 3);
+            rootLayout.Dock = DockStyle.None;
+            rootLayout.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            rootLayout.Location = new Point(0, 0);
+            rootLayout.MinimumSize = new Size(1000, 900);
+            rootLayout.BackColor = P.Canvas;
+            rootLayout.Padding = new Padding(24, 22, 24, 18);
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 204));
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+            viewportPanel.Controls.Add(rootLayout);
+            viewportPanel.Resize += delegate { if (!UiPerf.Resizing) FitRootToViewport(); };
 
-            root.Controls.Add(BuildHero(), 0, 0);
+            rootLayout.Controls.Add(BuildHero(), 0, 0);
 
             TableLayoutPanel main = Grid(2, 1);
             main.BackColor = P.Canvas;
@@ -160,7 +162,7 @@ namespace Firestone2Green
             main.ColumnStyles.Clear();
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-            root.Controls.Add(main, 0, 1);
+            rootLayout.Controls.Add(main, 0, 1);
             main.Controls.Add(BuildLeft(), 0, 0);
             main.Controls.Add(BuildRight(), 1, 0);
 
@@ -177,27 +179,79 @@ namespace Firestone2Green
             version.AutoEllipsis = false;
             footerGrid.Controls.Add(footer, 0, 0);
             footerGrid.Controls.Add(version, 1, 0);
-            root.Controls.Add(footerGrid, 0, 2);
+            rootLayout.Controls.Add(footerGrid, 0, 2);
 
             AppendLog("项目目录: " + baseDir);
             AppendLog("脚本路径: " + scriptPath);
             AppendLog("头像资源: " + avatarPath);
             AppendLog("Firestone/Overwolf 路径: " + (string.IsNullOrEmpty(overwolfRoot) ? "未选择（运行时会自动搜索）" : overwolfRoot));
             AppendLog("推荐流程：先确认/搜索 Firestone 路径，再点击“一键重启并授权”；需要持久化时点击“安装持续修复”（只安装监听，不会主动启动 Firestone），以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
-            fitRoot(this, EventArgs.Empty);
+            FitRootToViewport();
         }
 
         protected override void OnResizeBegin(EventArgs e)
         {
-            UiPerf.Resizing = true;
+            BeginResizeOptimization();
             base.OnResizeBegin(e);
         }
 
         protected override void OnResizeEnd(EventArgs e)
         {
-            UiPerf.Resizing = false;
-            Invalidate(true);
+            EndResizeOptimization();
             base.OnResizeEnd(e);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_ENTERSIZEMOVE) BeginResizeOptimization();
+            base.WndProc(ref m);
+            if (m.Msg == WM_EXITSIZEMOVE) EndResizeOptimization();
+        }
+
+        private void FitRootToViewport()
+        {
+            if (viewportPanel == null || rootLayout == null) return;
+            int scrollbar = viewportPanel.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0;
+            int w = Math.Max(rootLayout.MinimumSize.Width, viewportPanel.ClientSize.Width - scrollbar);
+            int h = Math.Max(rootLayout.MinimumSize.Height, viewportPanel.ClientSize.Height);
+            if (rootLayout.Size != new Size(w, h)) rootLayout.Size = new Size(w, h);
+        }
+
+        private void BeginResizeOptimization()
+        {
+            UiPerf.Resizing = true;
+            if (rootLayout == null || resizeRedrawFrozen) return;
+            try {
+                rootLayout.SuspendLayout();
+                SendMessage(rootLayout.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+                resizeRedrawFrozen = true;
+            } catch { }
+        }
+
+        private void EndResizeOptimization()
+        {
+            UiPerf.Resizing = false;
+            try {
+                FitRootToViewport();
+                if (rootLayout != null && resizeRedrawFrozen)
+                {
+                    SendMessage(rootLayout.Handle, WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
+                    rootLayout.ResumeLayout(true);
+                    resizeRedrawFrozen = false;
+                    rootLayout.Invalidate(true);
+                }
+                if (viewportPanel != null) viewportPanel.Invalidate(true);
+                Invalidate(true);
+            } catch {
+                try {
+                    if (rootLayout != null)
+                    {
+                        SendMessage(rootLayout.Handle, WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
+                        rootLayout.ResumeLayout(true);
+                    }
+                } catch { }
+                resizeRedrawFrozen = false;
+            }
         }
 
         private Control BuildHero()
@@ -215,12 +269,15 @@ namespace Firestone2Green
 
             TableLayoutPanel copy = Grid(1, 4);
             copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-            copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-            copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+            copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             copy.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             g.Controls.Add(copy, 0, 0);
             copy.Controls.Add(L("FIRESTONE LOCAL REPAIR", 8.5F, FontStyle.Bold, P.Clay), 0, 0);
-            copy.Controls.Add(L("Firestone2Green", 25F, FontStyle.Bold, P.Text), 0, 1);
+            Label appTitle = L("Firestone2Green", 25F, FontStyle.Bold, P.Text);
+            appTitle.AutoEllipsis = false;
+            appTitle.TextAlign = ContentAlignment.MiddleLeft;
+            copy.Controls.Add(appTitle, 0, 1);
             copy.Controls.Add(L("本地授权 By Mer3y", 10F, FontStyle.Regular, P.Muted), 0, 2);
 
             FlowLayoutPanel pills = new FlowLayoutPanel();
