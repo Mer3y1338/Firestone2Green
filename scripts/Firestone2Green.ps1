@@ -1830,7 +1830,8 @@ function Test-AutomationServerReady {
 function Get-AutomationPortsToTry {
   param([int]$RequestedPort)
   $ports = New-Object System.Collections.Generic.List[int]
-  foreach ($p in @($RequestedPort, 54284)) {
+  $primary = if ($RequestedPort -gt 0) { [int]$RequestedPort } else { 18765 }
+  foreach ($p in @($primary, 54284)) {
     if ($p -gt 0 -and -not $ports.Contains([int]$p)) { $ports.Add([int]$p) }
   }
   return @($ports)
@@ -1860,44 +1861,63 @@ function Start-FirestoneLaunchWithFallback {
 
   $attempts = @()
   $portsToTry = @(Get-AutomationPortsToTry -RequestedPort $Port)
+  $primaryPort = [int]$portsToTry[0]
+  $compatPort = if ($portsToTry.Count -gt 1) { [int]$portsToTry[1] } else { $null }
   $candidates = @(
     [pscustomobject]@{
-      Name = '官方两段式：先启用 automation，再启动 Firestone'
-      PreArgs = @('--enable-automation')
-      Args = @('-launchapp', $AppId, '-from-desktop')
-      TimeoutSeconds = 35
-    },
-    [pscustomobject]@{
-      Name = '官方两段式新版：先启用 automation，再 --launchapp'
-      PreArgs = @('--enable-automation')
-      Args = @('--launchapp', $AppId, '--origin', 'desktop')
-      TimeoutSeconds = 35
-    },
-    [pscustomobject]@{
-      Name = '兼容旧式启动：-launchapp -from-desktop + automation'
+      Name = "优先旧式启动：-launchapp -from-desktop + automation $primaryPort"
+      Port = $primaryPort
       PreArgs = @()
-      Args = @('-launchapp', $AppId, '-from-desktop', '--automation', "$Port", '--enable-automation')
+      Args = @('-launchapp', $AppId, '-from-desktop', '--automation', "$primaryPort", '--enable-automation')
       TimeoutSeconds = 30
     },
     [pscustomobject]@{
-      Name = '新版启动：--launchapp --origin desktop + automation'
+      Name = "新版启动：--launchapp --origin desktop + automation $primaryPort"
+      Port = $primaryPort
       PreArgs = @()
-      Args = @('--launchapp', $AppId, '--origin', 'desktop', '--automation', "$Port", '--enable-automation')
+      Args = @('--launchapp', $AppId, '--origin', 'desktop', '--automation', "$primaryPort", '--enable-automation')
       TimeoutSeconds = 30
     },
     [pscustomobject]@{
-      Name = '混合启动：-launchapp --origin desktop + automation'
+      Name = "混合启动：-launchapp --origin desktop + automation $primaryPort"
+      Port = $primaryPort
       PreArgs = @()
-      Args = @('-launchapp', $AppId, '--origin', 'desktop', '--automation', "$Port", '--enable-automation')
+      Args = @('-launchapp', $AppId, '--origin', 'desktop', '--automation', "$primaryPort", '--enable-automation')
       TimeoutSeconds = 20
-    },
-    [pscustomobject]@{
-      Name = '等号端口启动：-launchapp -from-desktop + --automation=端口'
-      PreArgs = @()
-      Args = @('-launchapp', $AppId, '-from-desktop', "--automation=$Port", '--enable-automation')
-      TimeoutSeconds = 25
     }
   )
+  if ($compatPort) {
+    $candidates += @(
+      [pscustomobject]@{
+        Name = "后置兼容：旧式启动 + --automation=$primaryPort"
+        Port = $primaryPort
+        PreArgs = @()
+        Args = @('-launchapp', $AppId, '-from-desktop', "--automation=$primaryPort", '--enable-automation')
+        TimeoutSeconds = 20
+      },
+      [pscustomobject]@{
+        Name = "后置兼容：官方两段式默认端口 $compatPort"
+        Port = $compatPort
+        PreArgs = @('--enable-automation')
+        Args = @('-launchapp', $AppId, '-from-desktop')
+        TimeoutSeconds = 20
+      },
+      [pscustomobject]@{
+        Name = "后置兼容：新版两段式默认端口 $compatPort"
+        Port = $compatPort
+        PreArgs = @('--enable-automation')
+        Args = @('--launchapp', $AppId, '--origin', 'desktop')
+        TimeoutSeconds = 20
+      },
+      [pscustomobject]@{
+        Name = "最后兜底：旧式启动 + automation $compatPort"
+        Port = $compatPort
+        PreArgs = @()
+        Args = @('-launchapp', $AppId, '-from-desktop', '--automation', "$compatPort", '--enable-automation')
+        TimeoutSeconds = 20
+      }
+    )
+  }
 
   $total = $candidates.Count * $Launchers.Count
   $attemptIndex = 0
@@ -1910,7 +1930,7 @@ function Start-FirestoneLaunchWithFallback {
       index = $attemptIndex
       name = $candidate.Name
       launcher = $launcherPath
-      ports = ($portsToTry -join ',')
+      ports = ([string]$candidate.Port)
       preArgs = ($candidate.PreArgs -join ' ')
       args = ($candidate.Args -join ' ')
       startedAt = (Get-Date).ToString('o')
@@ -1926,7 +1946,7 @@ function Start-FirestoneLaunchWithFallback {
         Start-Sleep -Seconds 3
       }
       Start-Process -FilePath $launcherPath -ArgumentList $candidate.Args
-      $readyPort = Wait-AnyAutomationServerReady -Ports $portsToTry -TimeoutSeconds ([int]$candidate.TimeoutSeconds)
+      $readyPort = Wait-AnyAutomationServerReady -Ports @([int]$candidate.Port) -TimeoutSeconds ([int]$candidate.TimeoutSeconds)
       if ($readyPort) {
         $record['automationReady'] = $true
         $record['automationPort'] = $readyPort
@@ -1943,7 +1963,7 @@ function Start-FirestoneLaunchWithFallback {
 
       $running = @(Get-FirestoneAppProcesses -AppId $AppId)
       $record['firestoneProcessCount'] = $running.Count
-      $record['error'] = "automation 接口未在 $($candidate.TimeoutSeconds) 秒内可用；已尝试端口：$($portsToTry -join ',')"
+      $record['error'] = "automation 接口未在 $($candidate.TimeoutSeconds) 秒内可用；当前尝试端口：$($candidate.Port)"
       Write-Warning ("{0} 未打开 automation，准备切换下一种启动方式。" -f $candidate.Name)
     } catch {
       $record['error'] = $_.Exception.Message
@@ -1971,7 +1991,7 @@ function Start-FirestoneLaunchWithFallback {
     Write-Warning "普通启动也失败：$($_.Exception.Message)"
   }
   Set-State $State 'automationAvailable' $false
-  throw 'automation 接口不可用：已尝试官方两段式、旧式、新版、混合启动参数，并尝试 OverwolfLauncher.exe / Overwolf.exe 与端口 18765 / 54284。请先确认 Firestone 已在 Overwolf 中安装并能正常打开；升级后如已安装持续修复，请先“移除持续修复”再“安装持续修复”。'
+  throw 'automation 接口不可用：已按优先级先尝试历史成功方案（18765 + 旧式启动），再尝试新版/混合参数，最后才尝试后置兼容端口与两段式启动。请先确认 Firestone 已在 Overwolf 中安装并能正常打开；升级后如已安装持续修复，请先“移除持续修复”再“安装持续修复”。'
 }
 
 function Start-FirestoneWithAutomation {
@@ -2064,7 +2084,7 @@ function Invoke-AutoAuth {
   Set-State $State 'networkMode' 'AuthOnlyOnline'
   try {
     $readyPort = Wait-AnyAutomationServerReady -Ports (Get-AutomationPortsToTry -RequestedPort $AutomationPort) -TimeoutSeconds 5
-    if (-not $readyPort) { throw "automation 接口未在 5 秒内可用：localhost:$AutomationPort / localhost:54284" }
+    if (-not $readyPort) { throw "automation 接口未在 5 秒内可用：localhost:$AutomationPort" }
     Set-State $State 'effectiveAutomationPort' $readyPort
     Set-State $State 'automationAvailable' $true
     Invoke-FirestoneRuntimeAuth -State $State -Port $readyPort -AppId $AppId -PlanId $AuthPlanId
