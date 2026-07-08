@@ -298,6 +298,21 @@ function Get-OverwolfLauncherPath {
   return (Resolve-Path -LiteralPath $launcher).Path
 }
 
+function Get-OverwolfLaunchExecutablePaths {
+  $primary = Get-OverwolfLauncherPath
+  $root = Split-Path -Parent $primary
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($name in @('OverwolfLauncher.exe','Overwolf.exe')) {
+    $p = Join-Path $root $name
+    if (Test-Path -LiteralPath $p -PathType Leaf) {
+      $resolved = (Resolve-Path -LiteralPath $p).Path
+      if (-not $items.Contains($resolved)) { $items.Add($resolved) }
+    }
+  }
+  if (-not $items.Contains($primary)) { $items.Insert(0, $primary) }
+  return @($items)
+}
+
 $resolvedOverwolfRoot = Resolve-OverwolfRoot -RequestedRoot $OverwolfRoot
 if ($resolvedOverwolfRoot) { $OverwolfRoot = $resolvedOverwolfRoot }
 
@@ -857,6 +872,53 @@ function Ensure-TaskSchedulerService {
   Write-Host '任务计划程序服务已启动。'
 }
 
+function New-Firestone2GreenTaskPowerShellArgs {
+  param(
+    [string]$ScriptPath,
+    [string]$TaskMode
+  )
+  $rootArg = if (-not [string]::IsNullOrWhiteSpace($OverwolfRoot)) { " -OverwolfRoot `"$OverwolfRoot`"" } else { '' }
+  $avatarArg = if (-not [string]::IsNullOrWhiteSpace($AvatarImagePath)) { " -AvatarImagePath `"$AvatarImagePath`"" } else { '' }
+  return "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Mode $TaskMode -AutomationPort $AutomationPort$rootArg$avatarArg -SkipCacheQuarantine"
+}
+
+function Write-HiddenPowerShellLauncherVbs {
+  param(
+    [string]$Path,
+    [string]$PowerShellArguments
+  )
+  $escapedArgs = $PowerShellArguments.Replace('"', '""')
+  $vbs = @"
+Set sh = CreateObject("WScript.Shell")
+sh.Run "powershell.exe $escapedArgs", 0, False
+"@
+  $vbs | Set-Content -LiteralPath $Path -Encoding Unicode
+}
+
+function Stop-WatchFirestoneProcesses {
+  param([string]$Reason = '清理旧版可见监听进程')
+  try {
+    $currentProcessId = [System.Diagnostics.Process]::GetCurrentProcess().Id
+    $watchers = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        ($_.Name -in @('powershell.exe', 'pwsh.exe')) -and
+        $_.CommandLine -like '*Firestone2Green.ps1*' -and
+        $_.CommandLine -like '*-Mode WatchFirestone*' -and
+        $_.ProcessId -ne $currentProcessId
+      }
+    foreach ($watcher in $watchers) {
+      try {
+        Stop-Process -Id $watcher.ProcessId -Force -ErrorAction Stop
+        Write-Host "$Reason：已结束 PID $($watcher.ProcessId)"
+      } catch {
+        Write-Warning "$Reason：结束 PID $($watcher.ProcessId) 失败：$($_.Exception.Message)"
+      }
+    }
+  } catch {
+    Write-Warning "$Reason 失败：$($_.Exception.Message)"
+  }
+}
+
 function Install-ShieldTask {
   param(
     [string]$TaskName,
@@ -866,12 +928,17 @@ function Install-ShieldTask {
   Ensure-TaskSchedulerService
   $script = $PSCommandPath
   if (-not $script) { throw '无法确定当前脚本路径，不能安装计划任务。' }
-  $rootArg = if (-not [string]::IsNullOrWhiteSpace($OverwolfRoot)) { " -OverwolfRoot `"$OverwolfRoot`"" } else { '' }
-  $actionArgs = "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Mode $TaskMode -AutomationPort $AutomationPort$rootArg -SkipCacheQuarantine"
-  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
+  $actionArgs = New-Firestone2GreenTaskPowerShellArgs -ScriptPath $script -TaskMode $TaskMode
   if ($TaskMode -eq 'WatchFirestone') {
+    Stop-WatchFirestoneProcesses -Reason '安装新监听前清理旧监听'
+    $launcherDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Firestone2Green'
+    New-Directory $launcherDir | Out-Null
+    $watchVbsPath = Join-Path $launcherDir 'WatchFirestone2Green.vbs'
+    Write-HiddenPowerShellLauncherVbs -Path $watchVbsPath -PowerShellArguments $actionArgs
+    $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$watchVbsPath`""
     $triggers = @((New-ScheduledTaskTrigger -AtLogOn))
   } else {
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
     $triggers = @(
       (New-ScheduledTaskTrigger -AtLogOn),
       (New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650))
@@ -881,7 +948,7 @@ function Install-ShieldTask {
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Days 3650)
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
   if ($TaskMode -eq 'WatchFirestone') {
-    Write-Host '启动事件监听任务已安装。'
+    Write-Host '启动事件监听任务已安装（隐藏启动，不再弹出 PowerShell 窗口）。'
   } else {
     Write-Host '计划任务已安装。'
   }
@@ -896,8 +963,7 @@ function Install-LaunchTask {
   Ensure-TaskSchedulerService
   $script = $PSCommandPath
   if (-not $script) { throw '无法确定当前脚本路径，不能安装静默启动任务。' }
-  $rootArg = if (-not [string]::IsNullOrWhiteSpace($OverwolfRoot)) { " -OverwolfRoot `"$OverwolfRoot`"" } else { '' }
-  $actionArgs = "-WindowStyle Hidden -NonInteractive -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Mode LaunchAuth -AutomationPort $AutomationPort$rootArg -SkipCacheQuarantine"
+  $actionArgs = New-Firestone2GreenTaskPowerShellArgs -ScriptPath $script -TaskMode 'LaunchAuth'
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
   $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -RunLevel Highest -LogonType Interactive
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
@@ -952,6 +1018,7 @@ function Remove-ShieldTask {
   param([string]$TaskName)
   Write-Step "删除计划任务：$TaskName"
   Ensure-TaskSchedulerService
+  Stop-WatchFirestoneProcesses -Reason '移除持续修复时清理监听进程'
   if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
@@ -975,6 +1042,11 @@ function Remove-ShieldTask {
     if (Test-Path -LiteralPath $vbsPath) {
       Remove-Item -LiteralPath $vbsPath -Force
       Write-Host "静默启动器已删除：$vbsPath"
+    }
+    $watchVbsPath = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Firestone2Green\WatchFirestone2Green.vbs'
+    if (Test-Path -LiteralPath $watchVbsPath) {
+      Remove-Item -LiteralPath $watchVbsPath -Force
+      Write-Host "隐藏监听启动器已删除：$watchVbsPath"
     }
   } catch {
     Write-Warning "快捷方式删除失败：$($_.Exception.Message)"
@@ -1755,64 +1827,123 @@ function Test-AutomationServerReady {
   }
 }
 
+function Get-AutomationPortsToTry {
+  param([int]$RequestedPort)
+  $ports = New-Object System.Collections.Generic.List[int]
+  foreach ($p in @($RequestedPort, 54284)) {
+    if ($p -gt 0 -and -not $ports.Contains([int]$p)) { $ports.Add([int]$p) }
+  }
+  return @($ports)
+}
+
+function Wait-AnyAutomationServerReady {
+  param(
+    [int[]]$Ports,
+    [int]$TimeoutSeconds = 30
+  )
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    foreach ($p in $Ports) {
+      if (Test-AutomationServerReady -Port $p) { return $p }
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  return $null
+}
+
 function Start-FirestoneLaunchWithFallback {
   param(
     [System.Collections.IDictionary]$State,
-    [string]$Launcher,
+    [string[]]$Launchers,
     [int]$Port
   )
 
   $attempts = @()
+  $portsToTry = @(Get-AutomationPortsToTry -RequestedPort $Port)
   $candidates = @(
     [pscustomobject]@{
+      Name = '官方两段式：先启用 automation，再启动 Firestone'
+      PreArgs = @('--enable-automation')
+      Args = @('-launchapp', $AppId, '-from-desktop')
+      TimeoutSeconds = 35
+    },
+    [pscustomobject]@{
+      Name = '官方两段式新版：先启用 automation，再 --launchapp'
+      PreArgs = @('--enable-automation')
+      Args = @('--launchapp', $AppId, '--origin', 'desktop')
+      TimeoutSeconds = 35
+    },
+    [pscustomobject]@{
       Name = '兼容旧式启动：-launchapp -from-desktop + automation'
+      PreArgs = @()
       Args = @('-launchapp', $AppId, '-from-desktop', '--automation', "$Port", '--enable-automation')
       TimeoutSeconds = 30
     },
     [pscustomobject]@{
       Name = '新版启动：--launchapp --origin desktop + automation'
+      PreArgs = @()
       Args = @('--launchapp', $AppId, '--origin', 'desktop', '--automation', "$Port", '--enable-automation')
       TimeoutSeconds = 30
     },
     [pscustomobject]@{
       Name = '混合启动：-launchapp --origin desktop + automation'
+      PreArgs = @()
       Args = @('-launchapp', $AppId, '--origin', 'desktop', '--automation', "$Port", '--enable-automation')
       TimeoutSeconds = 20
+    },
+    [pscustomobject]@{
+      Name = '等号端口启动：-launchapp -from-desktop + --automation=端口'
+      PreArgs = @()
+      Args = @('-launchapp', $AppId, '-from-desktop', "--automation=$Port", '--enable-automation')
+      TimeoutSeconds = 25
     }
   )
 
+  $total = $candidates.Count * $Launchers.Count
+  $attemptIndex = 0
+  foreach ($launcherPath in $Launchers) {
   for ($i = 0; $i -lt $candidates.Count; $i++) {
+    $attemptIndex++
     $candidate = $candidates[$i]
-    Write-Step ("启动方式 {0}/{1}：{2}" -f ($i + 1), $candidates.Count, $candidate.Name)
+    Write-Step ("启动方式 {0}/{1}：{2} [{3}]" -f $attemptIndex, $total, $candidate.Name, (Split-Path -Leaf $launcherPath))
     $record = [ordered]@{
-      index = ($i + 1)
+      index = $attemptIndex
       name = $candidate.Name
+      launcher = $launcherPath
+      ports = ($portsToTry -join ',')
+      preArgs = ($candidate.PreArgs -join ' ')
       args = ($candidate.Args -join ' ')
       startedAt = (Get-Date).ToString('o')
       automationReady = $false
+      automationPort = $null
       firestoneProcessCount = 0
     }
     $recordAdded = $false
     try {
-      Start-Process -FilePath $Launcher -ArgumentList $candidate.Args
-      $deadline = (Get-Date).AddSeconds([int]$candidate.TimeoutSeconds)
-      do {
-        if (Test-AutomationServerReady -Port $Port) {
-          $record['automationReady'] = $true
-          $record['completedAt'] = (Get-Date).ToString('o')
-          $attempts += [pscustomobject]$record
-          $recordAdded = $true
-          Set-State $State 'launchAttempts' $attempts
-          Set-State $State 'selectedLaunchMode' $candidate.Name
-          Write-Host 'automation 接口可用。'
-          return $candidate.Name
-        }
-        Start-Sleep -Milliseconds 500
-      } while ((Get-Date) -lt $deadline)
+      if ($candidate.PreArgs -and $candidate.PreArgs.Count -gt 0) {
+        Write-Host "预启动 automation：$($candidate.PreArgs -join ' ')"
+        Start-Process -FilePath $launcherPath -ArgumentList $candidate.PreArgs
+        Start-Sleep -Seconds 3
+      }
+      Start-Process -FilePath $launcherPath -ArgumentList $candidate.Args
+      $readyPort = Wait-AnyAutomationServerReady -Ports $portsToTry -TimeoutSeconds ([int]$candidate.TimeoutSeconds)
+      if ($readyPort) {
+        $record['automationReady'] = $true
+        $record['automationPort'] = $readyPort
+        $record['completedAt'] = (Get-Date).ToString('o')
+        $attempts += [pscustomobject]$record
+        $recordAdded = $true
+        Set-State $State 'launchAttempts' $attempts
+        Set-State $State 'selectedLaunchMode' $candidate.Name
+        Set-State $State 'selectedLauncher' $launcherPath
+        Set-State $State 'effectiveAutomationPort' $readyPort
+        Write-Host "automation 接口可用：localhost:$readyPort"
+        return [int]$readyPort
+      }
 
       $running = @(Get-FirestoneAppProcesses -AppId $AppId)
       $record['firestoneProcessCount'] = $running.Count
-      $record['error'] = "automation 接口未在 $($candidate.TimeoutSeconds) 秒内可用"
+      $record['error'] = "automation 接口未在 $($candidate.TimeoutSeconds) 秒内可用；已尝试端口：$($portsToTry -join ',')"
       Write-Warning ("{0} 未打开 automation，准备切换下一种启动方式。" -f $candidate.Name)
     } catch {
       $record['error'] = $_.Exception.Message
@@ -1825,21 +1956,22 @@ function Start-FirestoneLaunchWithFallback {
       }
     }
 
-    if (($i -lt ($candidates.Count - 1)) -and -not $NoKill) {
+    if (($attemptIndex -lt $total) -and -not $NoKill) {
       Write-Host '清理上一次未成功开启 automation 的 Overwolf/Firestone 进程后重试。'
       Stop-OverwolfProcesses | Out-Null
       Start-Sleep -Seconds 2
     }
   }
+  }
 
   Write-Warning '所有 automation 启动方式都失败，改用普通方式打开 Firestone，避免快捷方式看起来“无响应”。'
   try {
-    Start-Process -FilePath $Launcher -ArgumentList @('-launchapp', $AppId, '-from-desktop')
+    Start-Process -FilePath $Launchers[0] -ArgumentList @('-launchapp', $AppId, '-from-desktop')
   } catch {
     Write-Warning "普通启动也失败：$($_.Exception.Message)"
   }
   Set-State $State 'automationAvailable' $false
-  throw 'automation 接口不可用：已尝试旧式/新版/混合启动参数。请先确认 Firestone 已在 Overwolf 中安装并能正常打开；升级后如已安装持续修复，请先“移除持续修复”再“安装持续修复”。'
+  throw 'automation 接口不可用：已尝试官方两段式、旧式、新版、混合启动参数，并尝试 OverwolfLauncher.exe / Overwolf.exe 与端口 18765 / 54284。请先确认 Firestone 已在 Overwolf 中安装并能正常打开；升级后如已安装持续修复，请先“移除持续修复”再“安装持续修复”。'
 }
 
 function Start-FirestoneWithAutomation {
@@ -1848,16 +1980,16 @@ function Start-FirestoneWithAutomation {
     [switch]$RestartExisting,
     [switch]$SkipMonitor
   )
-  $launcher = Get-OverwolfLauncherPath
+  $launchers = @(Get-OverwolfLaunchExecutablePaths)
   if ($RestartExisting -and -not $NoKill) {
     Write-Step '检测到 Firestone 已运行但未开启 automation，自动重启并补授权'
     Set-State $State 'autoRestartStopped' (Stop-OverwolfProcesses)
   }
   Write-Step "启动 Firestone，并开启本地 automation 端口 $AutomationPort"
-  Start-FirestoneLaunchWithFallback -State $State -Launcher $launcher -Port $AutomationPort | Out-Null
+  $effectivePort = Start-FirestoneLaunchWithFallback -State $State -Launchers $launchers -Port $AutomationPort
   Start-Sleep -Seconds 3
   Set-AuthOnlyOnlineNetwork -State $State
-  Invoke-FirestoneRuntimeAuth -State $State -Port $AutomationPort -AppId $AppId -PlanId $AuthPlanId
+  Invoke-FirestoneRuntimeAuth -State $State -Port $effectivePort -AppId $AppId -PlanId $AuthPlanId
   Set-State $State 'networkMode' 'AuthOnlyOnline'
   Set-State $State 'automationAvailable' $true
   if (-not $SkipMonitor) { Invoke-Monitor -State $State }
@@ -1931,9 +2063,11 @@ function Invoke-AutoAuth {
   Set-AuthOnlyOnlineNetwork -State $State
   Set-State $State 'networkMode' 'AuthOnlyOnline'
   try {
-    Wait-AutomationServer -Port $AutomationPort -TimeoutSeconds 5 | Out-Null
+    $readyPort = Wait-AnyAutomationServerReady -Ports (Get-AutomationPortsToTry -RequestedPort $AutomationPort) -TimeoutSeconds 5
+    if (-not $readyPort) { throw "automation 接口未在 5 秒内可用：localhost:$AutomationPort / localhost:54284" }
+    Set-State $State 'effectiveAutomationPort' $readyPort
     Set-State $State 'automationAvailable' $true
-    Invoke-FirestoneRuntimeAuth -State $State -Port $AutomationPort -AppId $AppId -PlanId $AuthPlanId
+    Invoke-FirestoneRuntimeAuth -State $State -Port $readyPort -AppId $AppId -PlanId $AuthPlanId
   } catch {
     Set-State $State 'automationAvailable' $false
     Set-State $State 'authSkippedReason' $_.Exception.Message
