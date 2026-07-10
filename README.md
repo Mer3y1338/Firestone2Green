@@ -171,6 +171,12 @@ Firestone2Green/
 
 授权状态属于运行时状态。Firestone2Green 通过后台任务在启动后补齐本地授权状态，避免直接改动 Firestone 的签名文件。
 
+### hosts 不存在、被保存成 hosts.txt，或提示被保护怎么办？
+
+新版会读取 Windows 注册表中的实际 hosts 目录，不再只认固定路径；缺少无扩展名 `hosts` 时会自动创建，只有 `hosts.txt` 时会复制内容并保留原文件。写入前还会自动解除只读、重试短时占用、临时修复文件 ACL，并把原内容备份到 `%LOCALAPPDATA%\Firestone2Green\hosts-backups`（最多保留 10 份）。
+
+如果日志仍显示 `HOSTS_PROTECTION_ACTIVE`、`HOSTS_FILE_BUSY`、`HOSTS_CREATE_FAILED` 或 `HOSTS_WRITE_VERIFY_FAILED`，按日志关闭安全软件的 **Hosts 保护 / 系统文件防护**，或允许 `Firestone2Green.exe` 和 `powershell.exe` 修改 hosts，然后重新点击原按钮即可。不要下载所谓“hosts 修复文件”，也不要手工给 Everyone / Users 完全控制权限；无需联系作者。
+
 ### 数据、套牌或联网功能无法使用怎么办？
 
 在 GUI 中点击 **恢复全功能网络**，再点击 **验证状态**。报告中应显示：

@@ -186,6 +186,12 @@ No. Persistent repair and shortcut startup both hide the PowerShell window and d
 
 Authorization is runtime state. Firestone2Green repairs the local authorization state after startup through background tasks, avoiding direct modification of Firestone signature files.
 
+### What if hosts is missing, saved as hosts.txt, busy, or protected?
+
+The current build reads the real Windows hosts directory from the registry instead of relying only on a fixed path. It creates a missing extensionless `hosts`, copies and preserves an existing `hosts.txt`, clears read-only protection, retries short-lived locks, and temporarily repairs common file ACL restrictions. Before changing existing content, it stores up to 10 backups under `%LOCALAPPDATA%\Firestone2Green\hosts-backups`, then verifies the result and attempts rollback if the write fails.
+
+If the log still shows `HOSTS_PROTECTION_ACTIVE`, `HOSTS_FILE_BUSY`, `HOSTS_CREATE_FAILED`, or `HOSTS_WRITE_VERIFY_FAILED`, close the security product's **Hosts protection / system file protection** page or allow `Firestone2Green.exe` and `powershell.exe` to modify hosts, then click the original action again. Do not download replacement hosts files or permanently grant Full Control to Everyone/Users.
+
 ### What if data, deck, or online features do not work?
 
 In the GUI, click **恢复全功能网络**, then click **验证状态**. The report should show:

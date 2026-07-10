@@ -566,41 +566,478 @@ function Get-RemoteHostsFromLocalApp {
   return $result
 }
 
-function Set-HostsBlock {
-  param([string[]]$Hosts)
-  Write-Step '写入 hosts 精确域名阻断'
-  $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-  $begin = '# Firestone2Green BEGIN'
-  $end = '# Firestone2Green END'
-  $content = ''
-  if (Test-Path -LiteralPath $hostsPath) {
-    $content = Get-Content -LiteralPath $hostsPath -Raw -ErrorAction Stop
-  }
-  if ($null -eq $content) { $content = '' }
-  $escapedBegin = [regex]::Escape($begin)
-  $escapedEnd = [regex]::Escape($end)
-  $content = [regex]::Replace($content, "(?ms)\r?\n?$escapedBegin.*?$escapedEnd\r?\n?", "`r`n")
-  $blockLines = New-Object System.Collections.Generic.List[string]
-  $blockLines.Add($begin)
-  foreach ($h in ($Hosts | Sort-Object -Unique)) {
-    if ($h -match '^[a-z0-9.-]+$') {
-      $blockLines.Add("0.0.0.0 $h # Firestone2Green")
+function Get-WindowsHostsPath {
+  param([string]$HostsPath = '')
+
+  if (-not [string]::IsNullOrWhiteSpace($HostsPath)) {
+    try {
+      $expandedOverride = [Environment]::ExpandEnvironmentVariables($HostsPath.Trim().Trim('"'))
+      return [System.IO.Path]::GetFullPath($expandedOverride)
+    } catch {
+      throw "HOSTS_CREATE_FAILED: hosts 路径无效：$HostsPath。请保持管理员运行后重试；无需联系作者。"
     }
   }
-  $blockLines.Add($end)
-  $newContent = $content.TrimEnd() + "`r`n`r`n" + (($blockLines -join "`r`n")) + "`r`n"
-  $currentNormalized = ''
-  if (Test-Path -LiteralPath $hostsPath) {
-    try { $currentNormalized = (Get-Content -LiteralPath $hostsPath -Raw -ErrorAction Stop) } catch { $currentNormalized = '' }
+
+  $windowsRoot = if (-not [string]::IsNullOrWhiteSpace($env:SystemRoot)) { $env:SystemRoot } else { $env:windir }
+  if ([string]::IsNullOrWhiteSpace($windowsRoot)) {
+    throw 'HOSTS_CREATE_FAILED: 无法识别 Windows 系统目录。请检查 SystemRoot 环境变量后重试；无需联系作者。'
   }
-  if ($currentNormalized -eq $newContent) {
-    Write-Host "hosts 阻断段无变化，跳过写入。"
+
+  $databasePath = ''
+  try {
+    $tcpip = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -Name DataBasePath -ErrorAction Stop
+    $databasePath = [string]$tcpip.DataBasePath
+  } catch {}
+
+  if ([string]::IsNullOrWhiteSpace($databasePath)) {
+    $databasePath = Join-Path $windowsRoot 'System32\drivers\etc'
   } else {
-    [System.IO.File]::WriteAllText($hostsPath, $newContent, [System.Text.Encoding]::ASCII)
+    $databasePath = [Environment]::ExpandEnvironmentVariables($databasePath.Trim().Trim('"'))
+    if (-not [System.IO.Path]::IsPathRooted($databasePath)) {
+      $databasePath = Join-Path $windowsRoot $databasePath
+    }
   }
-  Write-Host "hosts 已阻断：$($blockLines.Count - 2) 个域名"
+
+  $candidate = if ([string]::Equals((Split-Path -Leaf $databasePath), 'hosts', [StringComparison]::OrdinalIgnoreCase)) {
+    $databasePath
+  } else {
+    Join-Path $databasePath 'hosts'
+  }
+
+  # A 32-bit PowerShell process is redirected away from System32 on 64-bit Windows.
+  # Sysnative is the supported alias that reaches the real system directory.
+  try {
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+      $system32Prefix = (Join-Path $windowsRoot 'System32').TrimEnd('\') + '\'
+      if ($candidate.StartsWith($system32Prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $relativePath = $candidate.Substring($system32Prefix.Length)
+        $candidate = Join-Path (Join-Path $windowsRoot 'Sysnative') $relativePath
+      }
+    }
+  } catch {}
+
+  try {
+    return [System.IO.Path]::GetFullPath($candidate)
+  } catch {
+    throw "HOSTS_CREATE_FAILED: Windows 返回的 hosts 路径无效：$candidate。请检查注册表 Tcpip\Parameters\DataBasePath；无需联系作者。"
+  }
 }
 
+function Get-NativeSystemToolPath {
+  param([Parameter(Mandatory=$true)][string]$FileName)
+  $windowsRoot = if (-not [string]::IsNullOrWhiteSpace($env:SystemRoot)) { $env:SystemRoot } else { $env:windir }
+  $systemDirectory = Join-Path $windowsRoot 'System32'
+  try {
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+      $systemDirectory = Join-Path $windowsRoot 'Sysnative'
+    }
+  } catch {}
+  $candidate = Join-Path $systemDirectory $FileName
+  if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+  return $FileName
+}
+
+function Get-HostsProtectionHint {
+  $products = @(
+    [pscustomobject]@{ Label = '火绒'; Processes = @('HipsTray','HipsMain') },
+    [pscustomobject]@{ Label = '360 安全卫士'; Processes = @('360Tray','360Safe') },
+    [pscustomobject]@{ Label = '腾讯电脑管家'; Processes = @('QQPCTray','QQPCRTP') }
+  )
+  $detected = New-Object System.Collections.Generic.List[string]
+  foreach ($product in $products) {
+    foreach ($processName in $product.Processes) {
+      if (Get-Process -Name $processName -ErrorAction SilentlyContinue) {
+        $detected.Add($product.Label)
+        break
+      }
+    }
+  }
+  if ($detected.Count -eq 0) { return '' }
+  return ('检测到可能相关的安全软件：' + (($detected | Sort-Object -Unique) -join '、') + '。')
+}
+
+function Get-HostsProtectionFailureMessage {
+  param([string]$HostsPath)
+  $hint = Get-HostsProtectionHint
+  return "HOSTS_PROTECTION_ACTIVE: hosts 被安全软件或系统策略实时保护：$HostsPath。工具已自动尝试管理员权限、解除只读和临时修复 ACL，但仍无法写入。$hint 请在安全软件中关闭【Hosts 保护/系统文件防护】，或允许 Firestone2Green.exe 和 powershell.exe 修改 hosts，然后回到工具重新点击一次。无需联系作者。"
+}
+
+function Get-HostsBaseException {
+  param($ErrorObject)
+  $exception = if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) { $ErrorObject.Exception } elseif ($ErrorObject -is [System.Exception]) { $ErrorObject } else { $null }
+  while ($null -ne $exception -and $null -ne $exception.InnerException) {
+    $exception = $exception.InnerException
+  }
+  return $exception
+}
+
+function Test-HostsUnauthorizedError {
+  param($ErrorObject)
+  $exception = Get-HostsBaseException -ErrorObject $ErrorObject
+  return ($exception -is [System.UnauthorizedAccessException])
+}
+
+function Throw-HostsOperationError {
+  param($ErrorObject, [string]$HostsPath, [string]$Operation)
+  $exception = Get-HostsBaseException -ErrorObject $ErrorObject
+  if ($exception -is [System.IO.IOException] -and -not ($exception -is [System.UnauthorizedAccessException])) {
+    throw "HOSTS_FILE_BUSY: 无法$Operation hosts，文件可能正被 Hosts 编辑器、加速器或安全软件的 Hosts 管理页面占用：$HostsPath。请关闭相关页面后重新点击一次；无需联系作者。"
+  }
+  throw (Get-HostsProtectionFailureMessage -HostsPath $HostsPath)
+}
+
+function Read-HostsFileBytes {
+  param([Parameter(Mandatory=$true)][string]$Path, [int]$RetryCount = 3)
+  $lastError = $null
+  for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+    $stream = $null
+    try {
+      $stream = New-Object System.IO.FileStream -ArgumentList $Path, ([System.IO.FileMode]::Open), ([System.IO.FileAccess]::Read), ([System.IO.FileShare]::ReadWrite)
+      $bytes = New-Object byte[] $stream.Length
+      $offset = 0
+      while ($offset -lt $bytes.Length) {
+        $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+        if ($read -le 0) { break }
+        $offset += $read
+      }
+      if ($offset -ne $bytes.Length) {
+        throw "读取 hosts 不完整：期望 $($bytes.Length) 字节，实际 $offset 字节。"
+      }
+      return ,$bytes
+    } catch {
+      $lastError = $_
+      if ($attempt -lt $RetryCount) { Start-Sleep -Milliseconds 300 }
+    } finally {
+      if ($null -ne $stream) { $stream.Dispose() }
+    }
+  }
+  throw $lastError
+}
+
+function Write-HostsFileBytes {
+  param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][byte[]]$Bytes, [int]$RetryCount = 3)
+  $lastError = $null
+  for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
+    $stream = $null
+    try {
+      $stream = New-Object System.IO.FileStream -ArgumentList $Path, ([System.IO.FileMode]::Create), ([System.IO.FileAccess]::Write), ([System.IO.FileShare]::Read)
+      if ($Bytes.Length -gt 0) { $stream.Write($Bytes, 0, $Bytes.Length) }
+      try { $stream.Flush($true) } catch { $stream.Flush() }
+      return
+    } catch {
+      $lastError = $_
+      if ($attempt -lt $RetryCount) { Start-Sleep -Milliseconds 300 }
+    } finally {
+      if ($null -ne $stream) { $stream.Dispose() }
+    }
+  }
+  throw $lastError
+}
+
+function Test-HostsByteArrayEqual {
+  param([byte[]]$Left, [byte[]]$Right)
+  if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left -and $null -eq $Right) }
+  if ($Left.Length -ne $Right.Length) { return $false }
+  return ([Convert]::ToBase64String($Left) -ceq [Convert]::ToBase64String($Right))
+}
+
+function Initialize-WindowsHostsFile {
+  param([Parameter(Mandatory=$true)][string]$HostsPath)
+
+  $result = [ordered]@{
+    created = $false
+    recoveredFromTxt = $false
+    sourcePath = ''
+  }
+  $directory = Split-Path -Parent $HostsPath
+  if ([string]::IsNullOrWhiteSpace($directory)) {
+    throw "HOSTS_CREATE_FAILED: hosts 路径缺少父目录：$HostsPath。无需联系作者。"
+  }
+
+  try {
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+      [void][System.IO.Directory]::CreateDirectory($directory)
+      Write-Host "HOSTS_RECOVERED: hosts 目录不存在，已自动创建：$directory"
+    }
+  } catch {
+    throw "HOSTS_CREATE_FAILED: 无法创建 hosts 目录：$directory。请保持管理员运行，并允许 Firestone2Green.exe 和 powershell.exe 创建系统文件，然后重试。无需联系作者。"
+  }
+
+  if (Test-Path -LiteralPath $HostsPath -PathType Container) {
+    throw "HOSTS_CREATE_FAILED: hosts 路径被同名文件夹占用：$HostsPath。请将该文件夹改名后重试；无需联系作者。"
+  }
+  if (Test-Path -LiteralPath $HostsPath -PathType Leaf) { return [pscustomobject]$result }
+
+  $hostsTxtPath = $HostsPath + '.txt'
+  try {
+    if (Test-Path -LiteralPath $hostsTxtPath -PathType Leaf) {
+      $sourceBytes = Read-HostsFileBytes -Path $hostsTxtPath
+      [System.IO.File]::WriteAllBytes($HostsPath, $sourceBytes)
+      $result.created = $true
+      $result.recoveredFromTxt = $true
+      $result.sourcePath = $hostsTxtPath
+      Write-Host 'HOSTS_RECOVERED_FROM_TXT: 检测到 hosts.txt，已自动复制为无扩展名 hosts；原 hosts.txt 已保留。'
+    } else {
+      [System.IO.File]::WriteAllBytes($HostsPath, [byte[]]@())
+      $result.created = $true
+      Write-Host 'HOSTS_RECOVERED: 未找到无扩展名 hosts，已自动创建。'
+    }
+  } catch {
+    $exception = Get-HostsBaseException -ErrorObject $_
+    if ($exception -is [System.IO.IOException] -and -not ($exception -is [System.UnauthorizedAccessException])) {
+      throw "HOSTS_FILE_BUSY: 无法创建 hosts，hosts.txt 或目标目录可能正被其他程序占用：$HostsPath。请关闭 Hosts 编辑器、加速器和安全软件的 Hosts 管理页面后重试；无需联系作者。"
+    }
+    throw "HOSTS_CREATE_FAILED: 系统缺少 hosts，但无法在 $directory 创建无扩展名文件。请保持管理员运行，并在安全软件中允许 Firestone2Green.exe 和 powershell.exe 修改 hosts，然后重试。无需联系作者。"
+  }
+  return [pscustomobject]$result
+}
+
+function Clear-HostsReadOnlyAttribute {
+  param([Parameter(Mandatory=$true)][string]$HostsPath)
+  $attributes = [System.IO.File]::GetAttributes($HostsPath)
+  if (($attributes -band [System.IO.FileAttributes]::ReadOnly) -eq 0) { return $false }
+  $newAttributes = [System.IO.FileAttributes]($attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly))
+  [System.IO.File]::SetAttributes($HostsPath, $newAttributes)
+  Write-Host 'hosts 带有只读属性，已自动解除只读。'
+  return $true
+}
+
+function Grant-TemporaryHostsAccess {
+  param([Parameter(Mandatory=$true)][string]$HostsPath)
+  if (-not (Test-IsAdmin)) {
+    throw (Get-HostsProtectionFailureMessage -HostsPath $HostsPath)
+  }
+
+  try {
+    $originalAcl = Get-Acl -LiteralPath $HostsPath -ErrorAction Stop
+  } catch {
+    throw (Get-HostsProtectionFailureMessage -HostsPath $HostsPath)
+  }
+
+  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $takeownPath = Get-NativeSystemToolPath -FileName 'takeown.exe'
+  $icaclsPath = Get-NativeSystemToolPath -FileName 'icacls.exe'
+  $ownerChanged = $false
+  try {
+    $takeownOutput = @(& $takeownPath /F $HostsPath /A 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      throw ('takeown exit ' + $LASTEXITCODE + ': ' + ($takeownOutput -join ' '))
+    }
+    $ownerChanged = $true
+    $sidArgument = "*$sid`:(F)"
+    $icaclsOutput = @(& $icaclsPath $HostsPath /grant:r $sidArgument /C 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      throw ('icacls exit ' + $LASTEXITCODE + ': ' + ($icaclsOutput -join ' '))
+    }
+    Write-Host 'hosts ACL 阻止写入，已临时接管并授予当前管理员写权限；完成后会恢复原 ACL。'
+    return [pscustomobject]@{
+      path = $HostsPath
+      originalAcl = $originalAcl
+      originalOwner = $originalAcl.Owner
+      sid = $sid
+      icaclsPath = $icaclsPath
+    }
+  } catch {
+    if ($ownerChanged) {
+      try { Set-Acl -LiteralPath $HostsPath -AclObject $originalAcl -ErrorAction Stop } catch {}
+    }
+    throw (Get-HostsProtectionFailureMessage -HostsPath $HostsPath)
+  }
+}
+
+function Restore-TemporaryHostsAccess {
+  param([Parameter(Mandatory=$true)]$Access)
+  try {
+    Set-Acl -LiteralPath $Access.path -AclObject $Access.originalAcl -ErrorAction Stop
+    Write-Host 'hosts 原 ACL/所有者已恢复。'
+    return $true
+  } catch {
+    $firstRestoreError = $_.Exception.Message
+  }
+
+  try {
+    $sidArgument = "*$($Access.sid)"
+    $removeOutput = @(& $Access.icaclsPath $Access.path /remove:g $sidArgument /C 2>&1)
+    $ownerOutput = @(& $Access.icaclsPath $Access.path /setowner $Access.originalOwner /C 2>&1)
+    Set-Acl -LiteralPath $Access.path -AclObject $Access.originalAcl -ErrorAction Stop
+    Write-Host 'hosts 原 ACL/所有者已通过备用流程恢复。'
+    return $true
+  } catch {
+    Write-Warning "HOSTS_ACL_RESTORE_WARNING: hosts 内容已处理，但原 ACL 自动恢复失败：$firstRestoreError。已尝试移除临时 SID 权限；请重新运行一次【验证状态】确认。"
+    return $false
+  }
+}
+
+function Backup-WindowsHostsFile {
+  param(
+    [Parameter(Mandatory=$true)][string]$HostsPath,
+    [Parameter(Mandatory=$true)][byte[]]$Bytes,
+    [string]$BackupDirectory = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($BackupDirectory)) {
+    $localRoot = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { $env:LOCALAPPDATA } else { $env:TEMP }
+    $BackupDirectory = Join-Path $localRoot 'Firestone2Green\hosts-backups'
+  }
+  try {
+    [void][System.IO.Directory]::CreateDirectory($BackupDirectory)
+    $backupPath = Join-Path $BackupDirectory ('hosts_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff') + '.bak')
+    [System.IO.File]::WriteAllBytes($backupPath, $Bytes)
+    @(Get-ChildItem -LiteralPath $BackupDirectory -Filter 'hosts_*.bak' -File -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTimeUtc -Descending |
+      Select-Object -Skip 10) | ForEach-Object {
+        try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch {}
+      }
+    Write-Host "hosts 原内容已备份：$backupPath"
+    return $backupPath
+  } catch {
+    Write-Warning "hosts 备份失败，但已在内存中保留原内容并会在写入失败时自动回滚：$($_.Exception.Message)"
+    return ''
+  }
+}
+
+function Set-HostsBlock {
+  param(
+    [string[]]$Hosts,
+    [string]$HostsPath = '',
+    [string]$BackupDirectory = ''
+  )
+  Write-Step '写入 hosts 精确域名阻断'
+  $resolvedHostsPath = Get-WindowsHostsPath -HostsPath $HostsPath
+  Write-Host "hosts 实际路径：$resolvedHostsPath"
+
+  $initialization = Initialize-WindowsHostsFile -HostsPath $resolvedHostsPath
+  $temporaryAccess = $null
+  $operationError = $null
+  $originalBytes = $null
+  $writeAttempted = $false
+  $readOnlyCleared = $false
+  $backupPath = ''
+  $aclRestored = $true
+  $result = $null
+
+  try {
+    try {
+      $readOnlyCleared = Clear-HostsReadOnlyAttribute -HostsPath $resolvedHostsPath
+    } catch {
+      if ((Test-HostsUnauthorizedError -ErrorObject $_) -and $null -eq $temporaryAccess) {
+        $temporaryAccess = Grant-TemporaryHostsAccess -HostsPath $resolvedHostsPath
+        try { $readOnlyCleared = Clear-HostsReadOnlyAttribute -HostsPath $resolvedHostsPath } catch { Throw-HostsOperationError -ErrorObject $_ -HostsPath $resolvedHostsPath -Operation '解除只读属性并更新' }
+      } else {
+        Throw-HostsOperationError -ErrorObject $_ -HostsPath $resolvedHostsPath -Operation '检查并更新'
+      }
+    }
+
+    try {
+      $originalBytes = Read-HostsFileBytes -Path $resolvedHostsPath
+    } catch {
+      if ((Test-HostsUnauthorizedError -ErrorObject $_) -and $null -eq $temporaryAccess) {
+        $temporaryAccess = Grant-TemporaryHostsAccess -HostsPath $resolvedHostsPath
+        try { $originalBytes = Read-HostsFileBytes -Path $resolvedHostsPath } catch { Throw-HostsOperationError -ErrorObject $_ -HostsPath $resolvedHostsPath -Operation '读取' }
+      } else {
+        Throw-HostsOperationError -ErrorObject $_ -HostsPath $resolvedHostsPath -Operation '读取'
+      }
+    }
+
+    # ISO-8859-1 provides a one-byte-to-one-character mapping, so existing UTF-8/ANSI comments
+    # remain byte-for-byte intact while the Firestone2Green block itself stays ASCII.
+    $hostsByteEncoding = [System.Text.Encoding]::GetEncoding(28591)
+    $content = $hostsByteEncoding.GetString($originalBytes)
+    $begin = '# Firestone2Green BEGIN'
+    $end = '# Firestone2Green END'
+    $escapedBegin = [regex]::Escape($begin)
+    $escapedEnd = [regex]::Escape($end)
+    $contentWithoutOwnBlock = [regex]::Replace($content, "(?ms)\r?\n?$escapedBegin.*?$escapedEnd\r?\n?", "`r`n")
+
+    $validHosts = New-Object System.Collections.Generic.List[string]
+    foreach ($hostEntry in @($Hosts | Sort-Object -Unique)) {
+      if ($null -eq $hostEntry) { continue }
+      $hostName = ([string]$hostEntry).Trim().ToLowerInvariant()
+      if ($hostName -match '^[a-z0-9.-]+$' -and -not $validHosts.Contains($hostName)) {
+        $validHosts.Add($hostName)
+      }
+    }
+
+    $blockLines = New-Object System.Collections.Generic.List[string]
+    $blockLines.Add($begin)
+    foreach ($hostName in $validHosts) { $blockLines.Add("0.0.0.0 $hostName # Firestone2Green") }
+    $blockLines.Add($end)
+
+    $baseContent = $contentWithoutOwnBlock.TrimEnd()
+    $blockText = $blockLines -join "`r`n"
+    $newContent = if ([string]::IsNullOrWhiteSpace($baseContent)) { $blockText + "`r`n" } else { $baseContent + "`r`n`r`n" + $blockText + "`r`n" }
+    $newBytes = $hostsByteEncoding.GetBytes($newContent)
+    $changed = -not (Test-HostsByteArrayEqual -Left $originalBytes -Right $newBytes)
+
+    if (-not $changed) {
+      Write-Host 'hosts 阻断段无变化，跳过写入。'
+    } else {
+      if (-not $initialization.created -or $initialization.recoveredFromTxt) {
+        $backupPath = Backup-WindowsHostsFile -HostsPath $resolvedHostsPath -Bytes $originalBytes -BackupDirectory $BackupDirectory
+      }
+      $writeAttempted = $true
+      try {
+        Write-HostsFileBytes -Path $resolvedHostsPath -Bytes $newBytes
+      } catch {
+        if ((Test-HostsUnauthorizedError -ErrorObject $_) -and $null -eq $temporaryAccess) {
+          $temporaryAccess = Grant-TemporaryHostsAccess -HostsPath $resolvedHostsPath
+          try {
+            if (-not $readOnlyCleared) { $readOnlyCleared = Clear-HostsReadOnlyAttribute -HostsPath $resolvedHostsPath }
+            Write-HostsFileBytes -Path $resolvedHostsPath -Bytes $newBytes
+          } catch {
+            Throw-HostsOperationError -ErrorObject $_ -HostsPath $resolvedHostsPath -Operation '写入'
+          }
+        } else {
+          Throw-HostsOperationError -ErrorObject $_ -HostsPath $resolvedHostsPath -Operation '写入'
+        }
+      }
+
+      Start-Sleep -Milliseconds 150
+      try {
+        $verifiedBytes = Read-HostsFileBytes -Path $resolvedHostsPath
+      } catch {
+        Throw-HostsOperationError -ErrorObject $_ -HostsPath $resolvedHostsPath -Operation '校验'
+      }
+      $verifiedText = $hostsByteEncoding.GetString($verifiedBytes)
+      if (-not (Test-HostsByteArrayEqual -Left $verifiedBytes -Right $newBytes) -or
+          $verifiedText.IndexOf($begin, [StringComparison]::Ordinal) -lt 0 -or
+          $verifiedText.IndexOf($end, [StringComparison]::Ordinal) -lt 0) {
+        $hint = Get-HostsProtectionHint
+        throw "HOSTS_WRITE_VERIFY_FAILED: hosts 写入后校验失败，文件可能被安全软件立即还原：$resolvedHostsPath。$hint 请关闭【Hosts 保护/系统文件防护】或加入允许列表后重试；无需联系作者。"
+      }
+    }
+
+    Write-Host "hosts 已阻断：$($validHosts.Count) 个域名"
+    $result = [pscustomobject]@{
+      path = $resolvedHostsPath
+      changed = [bool]$changed
+      created = [bool]$initialization.created
+      recoveredFromTxt = [bool]$initialization.recoveredFromTxt
+      readOnlyCleared = [bool]$readOnlyCleared
+      aclRecoveryUsed = [bool]($null -ne $temporaryAccess)
+      aclRestored = $true
+      backupPath = $backupPath
+      blockedCount = $validHosts.Count
+    }
+  } catch {
+    $operationError = $_
+    if ($writeAttempted -and $null -ne $originalBytes) {
+      try {
+        Write-HostsFileBytes -Path $resolvedHostsPath -Bytes $originalBytes
+        Write-Warning 'hosts 更新失败，已自动回滚到写入前内容。'
+      } catch {
+        Write-Warning "hosts 更新失败，自动回滚也被系统或安全软件阻止：$($_.Exception.Message)"
+      }
+    }
+  } finally {
+    if ($null -ne $temporaryAccess) {
+      $aclRestored = Restore-TemporaryHostsAccess -Access $temporaryAccess
+    }
+  }
+
+  if ($null -ne $operationError) { throw $operationError }
+  if ($null -ne $result) { $result.aclRestored = [bool]$aclRestored }
+  return $result
+}
 function Get-DataOnlineBlockedHosts {
   param([string[]]$Hosts)
   # DataOnline allows Firestone static game/card/i18n data while keeping known
@@ -633,10 +1070,15 @@ function Get-DataOnlineBlockedHosts {
 }
 
 function Get-CurrentShieldHostsBlock {
-  $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-  if (-not (Test-Path -LiteralPath $hostsPath)) { return @() }
-  $content = Get-Content -LiteralPath $hostsPath -Raw -ErrorAction SilentlyContinue
-  if ($null -eq $content) { return @() }
+  param([string]$HostsPath = '')
+  $resolvedHostsPath = Get-WindowsHostsPath -HostsPath $HostsPath
+  if (-not (Test-Path -LiteralPath $resolvedHostsPath -PathType Leaf)) { return @() }
+  try {
+    $bytes = Read-HostsFileBytes -Path $resolvedHostsPath -RetryCount 1
+    $content = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+  } catch {
+    return @()
+  }
   $begin = [regex]::Escape('# Firestone2Green BEGIN')
   $end = [regex]::Escape('# Firestone2Green END')
   $m = [regex]::Match($content, "(?ms)$begin(.*?)$end")
@@ -672,7 +1114,8 @@ function Set-DataOnlineNetwork {
   }
   $allHosts = Get-RemoteHostsFromLocalApp -VersionRoot $versionRoot
   $blockedHosts = Get-DataOnlineBlockedHosts -Hosts $allHosts
-  Set-HostsBlock -Hosts $blockedHosts
+  $hostsMaintenance = Set-HostsBlock -Hosts $blockedHosts
+  Set-State $State 'hostsMaintenance' $hostsMaintenance
   try { ipconfig /flushdns | Out-Null } catch {}
 
   Set-State $State 'networkMode' 'DataOnline'
@@ -710,7 +1153,8 @@ function Set-AuthOnlyOnlineNetwork {
   $authReportHosts = @(
     '73ybnsv6auhl6x2hv5tvdoppcq0oecmq.lambda-url.us-west-2.on.aws'
   )
-  Set-HostsBlock -Hosts $authReportHosts
+  $hostsMaintenance = Set-HostsBlock -Hosts $authReportHosts
+  Set-State $State 'hostsMaintenance' $hostsMaintenance
   try { ipconfig /flushdns | Out-Null } catch {}
 
   Set-State $State 'networkMode' 'AuthOnlyOnline'
@@ -1084,7 +1528,9 @@ function Invoke-Verify {
   Set-State $State 'tcp' $tcpArray
   Set-State $State 'externalTcp' $externalTcpArray
   Set-State $State 'hostsExtracted' $hosts
-  $currentShieldHosts = Get-CurrentShieldHostsBlock
+  $currentHostsPath = Get-WindowsHostsPath
+  Set-State $State 'hostsPath' $currentHostsPath
+  $currentShieldHosts = Get-CurrentShieldHostsBlock -HostsPath $currentHostsPath
   $looksLikeDataOnlineHosts = (
     ($currentShieldHosts -contains 'subscriptions-api.overwolf.com') -and
     (-not ($currentShieldHosts -contains 'static.firestoneapp.com')) -and
@@ -1153,7 +1599,8 @@ function Invoke-Apply {
   $hosts = Get-RemoteHostsFromLocalApp -VersionRoot $versionRoot
   Set-State $State 'hostsExtracted' $hosts
   if (-not $SkipHosts) {
-    Set-HostsBlock -Hosts $hosts
+    $hostsMaintenance = Set-HostsBlock -Hosts $hosts
+    Set-State $State 'hostsMaintenance' $hostsMaintenance
     Set-State $State 'hostsBlocked' $hosts
   }
 
