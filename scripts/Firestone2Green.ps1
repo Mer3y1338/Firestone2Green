@@ -715,7 +715,7 @@ function Read-HostsFileBytes {
 }
 
 function Write-HostsFileBytes {
-  param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][byte[]]$Bytes, [int]$RetryCount = 3)
+  param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][AllowEmptyCollection()][byte[]]$Bytes, [int]$RetryCount = 3)
   $lastError = $null
   for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
     $stream = $null
@@ -871,7 +871,7 @@ function Restore-TemporaryHostsAccess {
 function Backup-WindowsHostsFile {
   param(
     [Parameter(Mandatory=$true)][string]$HostsPath,
-    [Parameter(Mandatory=$true)][byte[]]$Bytes,
+    [Parameter(Mandatory=$true)][AllowEmptyCollection()][byte[]]$Bytes,
     [string]$BackupDirectory = ''
   )
   if ([string]::IsNullOrWhiteSpace($BackupDirectory)) {
