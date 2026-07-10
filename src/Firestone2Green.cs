@@ -18,9 +18,9 @@ using Microsoft.Win32;
 [assembly: AssemblyProduct("Firestone2Green")]
 [assembly: AssemblyDescription("Firestone2Green local repair tool")]
 [assembly: AssemblyCompany("Mer3y")]
-[assembly: AssemblyVersion("0.2.2.0")]
-[assembly: AssemblyFileVersion("0.2.2.0")]
-[assembly: AssemblyInformationalVersion("0.2.2")]
+[assembly: AssemblyVersion("0.2.3.0")]
+[assembly: AssemblyFileVersion("0.2.3.0")]
+[assembly: AssemblyInformationalVersion("0.2.3")]
 
 namespace Firestone2Green
 {
@@ -65,7 +65,7 @@ namespace Firestone2Green
         private const string DisclaimerFileName = "disclaimer.ok";
         private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
         private const string OverwolfMainFile = "Overwolf.exe";
-        private const string AppVersion = "0.2.2";
+        private const string AppVersion = "0.2.3";
         private const string OfficialRepoUrl = "https://github.com/Mer3y1338/Firestone2Green";
         private const string OfficialGroupJoinUrl = "https://qm.qq.com/q/ZP3oGLAlQ4";
         private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";

@@ -715,7 +715,7 @@ function Read-HostsFileBytes {
 }
 
 function Write-HostsFileBytes {
-  param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][byte[]]$Bytes, [int]$RetryCount = 3)
+  param([Parameter(Mandatory=$true)][string]$Path, [Parameter(Mandatory=$true)][AllowEmptyCollection()][byte[]]$Bytes, [int]$RetryCount = 3)
   $lastError = $null
   for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
     $stream = $null
@@ -739,6 +739,73 @@ function Test-HostsByteArrayEqual {
   if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left -and $null -eq $Right) }
   if ($Left.Length -ne $Right.Length) { return $false }
   return ([Convert]::ToBase64String($Left) -ceq [Convert]::ToBase64String($Right))
+}
+
+function Get-DefaultWindowsHostsBytes {
+  $lines = @(
+    '# Copyright (c) 1993-2009 Microsoft Corp.',
+    '#',
+    '# This is a sample HOSTS file used by Microsoft TCP/IP for Windows.',
+    '#',
+    '# This file contains the mappings of IP addresses to host names. Each',
+    '# entry should be kept on an individual line. The IP address should',
+    '# be placed in the first column followed by the corresponding host name.',
+    '# The IP address and the host name should be separated by at least one',
+    '# space.',
+    '#',
+    '# Additionally, comments (such as these) may be inserted on individual',
+    "# lines or following the machine name denoted by a '#' symbol.",
+    '#',
+    '# For example:',
+    '#',
+    '#      102.54.94.97     rhino.acme.com          # source server',
+    '#       38.25.63.10     x.acme.com              # x client host',
+    '',
+    '# localhost name resolution is handled within DNS itself.',
+    '#   127.0.0.1       localhost',
+    '#   ::1             localhost'
+  )
+  $template = ($lines -join "`r`n") + "`r`n"
+  return ,([System.Text.Encoding]::ASCII.GetBytes($template))
+}
+
+function Test-HostsBytesEmptyOrWhiteSpace {
+  param([byte[]]$Bytes)
+  if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return $true }
+
+  $encoding = $null
+  $offset = 0
+  if ($Bytes.Length -ge 4 -and $Bytes[0] -eq 0x00 -and $Bytes[1] -eq 0x00 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) {
+    $encoding = [System.Text.Encoding]::GetEncoding(12001)
+    $offset = 4
+  } elseif ($Bytes.Length -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0x00 -and $Bytes[3] -eq 0x00) {
+    $encoding = [System.Text.Encoding]::UTF32
+    $offset = 4
+  } elseif ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+    $encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false, $true
+    $offset = 3
+  } elseif ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+    $encoding = [System.Text.Encoding]::BigEndianUnicode
+    $offset = 2
+  } elseif ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+    $encoding = [System.Text.Encoding]::Unicode
+    $offset = 2
+  }
+
+  if ($null -ne $encoding) {
+    if ($Bytes.Length -eq $offset) { return $true }
+    try {
+      $text = $encoding.GetString($Bytes, $offset, $Bytes.Length - $offset)
+      return [string]::IsNullOrWhiteSpace($text)
+    } catch {
+      return $false
+    }
+  }
+
+  foreach ($value in $Bytes) {
+    if ($value -ne 0x09 -and $value -ne 0x0A -and $value -ne 0x0D -and $value -ne 0x20) { return $false }
+  }
+  return $true
 }
 
 function Initialize-WindowsHostsFile {
@@ -871,7 +938,7 @@ function Restore-TemporaryHostsAccess {
 function Backup-WindowsHostsFile {
   param(
     [Parameter(Mandatory=$true)][string]$HostsPath,
-    [Parameter(Mandatory=$true)][byte[]]$Bytes,
+    [Parameter(Mandatory=$true)][AllowEmptyCollection()][byte[]]$Bytes,
     [string]$BackupDirectory = ''
   )
   if ([string]::IsNullOrWhiteSpace($BackupDirectory)) {
@@ -913,6 +980,7 @@ function Set-HostsBlock {
   $readOnlyCleared = $false
   $backupPath = ''
   $aclRestored = $true
+  $defaultTemplateInitialized = $false
   $result = $null
 
   try {
@@ -941,7 +1009,13 @@ function Set-HostsBlock {
     # ISO-8859-1 provides a one-byte-to-one-character mapping, so existing UTF-8/ANSI comments
     # remain byte-for-byte intact while the Firestone2Green block itself stays ASCII.
     $hostsByteEncoding = [System.Text.Encoding]::GetEncoding(28591)
-    $content = $hostsByteEncoding.GetString($originalBytes)
+    $baseBytes = $originalBytes
+    if (Test-HostsBytesEmptyOrWhiteSpace -Bytes $originalBytes) {
+      $baseBytes = Get-DefaultWindowsHostsBytes
+      $defaultTemplateInitialized = $true
+      Write-Host 'HOSTS_DEFAULT_TEMPLATE_RESTORED: hosts 不存在或内容为空，已自动写入 Windows 默认模板。'
+    }
+    $content = $hostsByteEncoding.GetString($baseBytes)
     $begin = '# Firestone2Green BEGIN'
     $end = '# Firestone2Green END'
     $escapedBegin = [regex]::Escape($begin)
@@ -1012,6 +1086,7 @@ function Set-HostsBlock {
       changed = [bool]$changed
       created = [bool]$initialization.created
       recoveredFromTxt = [bool]$initialization.recoveredFromTxt
+      defaultTemplateInitialized = [bool]$defaultTemplateInitialized
       readOnlyCleared = [bool]$readOnlyCleared
       aclRecoveryUsed = [bool]($null -ne $temporaryAccess)
       aclRestored = $true
@@ -2756,16 +2831,30 @@ try {
   Set-State $state 'finishedAt' ((Get-Date).ToString('o'))
   Set-State $state 'error' $null
 } catch {
+  $failure = $_
   Set-State $state 'finishedAt' ((Get-Date).ToString('o'))
-  Set-State $state 'error' $_.Exception.Message
-  Set-State $state 'errorType' ($_.Exception.GetType().FullName)
-  Set-State $state 'errorLine' $_.InvocationInfo.ScriptLineNumber
-  Set-State $state 'errorCommand' $_.InvocationInfo.Line
-  Set-State $state 'errorStack' $_.ScriptStackTrace
-  Write-Host "错误位置：line $($state['errorLine'])" -ForegroundColor Red
-  Write-Host $state['errorCommand'] -ForegroundColor Red
-  Write-Host $state['errorStack'] -ForegroundColor DarkRed
-  Write-Error $_
+  Set-State $state 'error' $failure.Exception.Message
+  Set-State $state 'errorType' ($failure.Exception.GetType().FullName)
+  Set-State $state 'errorLine' $failure.InvocationInfo.ScriptLineNumber
+  Set-State $state 'errorCommand' $failure.InvocationInfo.Line
+  Set-State $state 'errorStack' $failure.ScriptStackTrace
+
+  # Do not call Write-Error here while ErrorActionPreference is Stop. Doing so creates a
+  # second WriteErrorException at this catch block and hides the original failure location.
+  Write-Host "错误：$($state['error'])" -ForegroundColor Red
+  Write-Host "原始错误位置：line $($state['errorLine'])" -ForegroundColor Red
+  if ($state['errorCommand']) { Write-Host $state['errorCommand'] -ForegroundColor Red }
+  if ($state['errorStack']) { Write-Host $state['errorStack'] -ForegroundColor DarkRed }
+  try {
+    [Console]::Error.WriteLine("F2G_ERROR: " + [string]$state['error'])
+    [Console]::Error.WriteLine("F2G_ERROR_TYPE: " + [string]$state['errorType'])
+    [Console]::Error.WriteLine("F2G_ERROR_LINE: " + [string]$state['errorLine'])
+    if ($state['errorCommand']) {
+      [Console]::Error.WriteLine("F2G_ERROR_COMMAND: " + ([string]$state['errorCommand']).Trim())
+    }
+  } catch {
+    # The report still contains the original error if the host has no writable stderr stream.
+  }
 } finally {
   try { Write-Report -State $state -ReportDir $ReportDir | Out-Null } catch { Write-Warning "报告写入失败：$($_.Exception.Message)" }
 }

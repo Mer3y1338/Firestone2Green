@@ -33,7 +33,7 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 - **Silent persistent repair**: Can install scheduled tasks to automatically refresh authorization after Windows restarts or Firestone updates. Installing it does not launch Firestone by itself.
 - **Dedicated launch shortcut**: Creates a desktop shortcut named `Firestone2Green 启动 Firestone` for daily silent startup.
 - **Automatic update check**: Checks GitHub Releases on startup and shows the result in the top-right status area; network failures show an update-check warning.
-- **Friendly error explanations**: The log now adds short explanations and suggested fixes for common errors.
+- **Preserved root-cause errors**: Failed runs now keep the original exception, type, source line, and command, while still adding short explanations and suggested fixes for common errors.
 - **First-run disclaimer**: Shows a short learning-only / support-official disclaimer on first launch.
 - **High-DPI support and version display**: Adds DPI-aware manifest settings and a bottom-right version label.
 - **Stable data loading**: Switches to `AuthOnlyOnline` before starting Firestone, so deck data, meta data, and tracker data can load normally.
@@ -133,6 +133,10 @@ In normal use, users do not need to carry an extra `.ps1` file or avatar file.
 
 When only `Firestone2Green_vVERSION.exe` is distributed, the program extracts the embedded script and default avatar resource on first run. If `assets/avatar.jpg` is not present next to the program, the embedded avatar is used and written into the local runtime directory, so other users can still get the bottom-left login avatar replacement.
 
+## Diagnosing Exit Code 1
+
+Starting with v0.2.3, failed runs print `F2G_ERROR`, `F2G_ERROR_TYPE`, `F2G_ERROR_LINE`, and `F2G_ERROR_COMMAND`. These fields identify the original exception and source location instead of pointing at the outer error handler. For the full state, open the newest `FirestoneOfflineReport_*.json` from the GUI's **打开报告** button.
+
 ## Repository Layout
 
 ```text
@@ -188,7 +192,7 @@ Authorization is runtime state. Firestone2Green repairs the local authorization 
 
 ### What if hosts is missing, saved as hosts.txt, busy, or protected?
 
-The current build reads the real Windows hosts directory from the registry instead of relying only on a fixed path. It creates a missing extensionless `hosts`, copies and preserves an existing `hosts.txt`, clears read-only protection, retries short-lived locks, and temporarily repairs common file ACL restrictions. Before changing existing content, it stores up to 10 backups under `%LOCALAPPDATA%\Firestone2Green\hosts-backups`, then verifies the result and attempts rollback if the write fails.
+The current build reads the real Windows hosts directory from the registry instead of relying only on a fixed path. If the extensionless `hosts` is missing, zero bytes long, or contains only whitespace, Firestone2Green restores the standard Windows HOSTS template before adding its managed block. It copies and preserves an existing `hosts.txt`; if that file is empty, the destination `hosts` receives the default template. Existing non-empty hosts content is preserved. The tool also clears read-only protection, retries short-lived locks, and temporarily repairs common file ACL restrictions. Before changing existing content, it stores up to 10 backups under `%LOCALAPPDATA%\Firestone2Green\hosts-backups`, then verifies the result and attempts rollback if the write fails.
 
 If the log still shows `HOSTS_PROTECTION_ACTIVE`, `HOSTS_FILE_BUSY`, `HOSTS_CREATE_FAILED`, or `HOSTS_WRITE_VERIFY_FAILED`, close the security product's **Hosts protection / system file protection** page or allow `Firestone2Green.exe` and `powershell.exe` to modify hosts, then click the original action again. Do not download replacement hosts files or permanently grant Full Control to Everyone/Users.
 

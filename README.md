@@ -31,7 +31,7 @@
 - **静默持续修复**：支持安装计划任务，在系统重启或 Firestone 更新后自动补授权；安装本身不会主动启动 Firestone。
 - **快捷方式启动**：可创建桌面快捷方式 `Firestone2Green 启动 Firestone`，用于日常无弹窗启动。
 - **自动更新检查**：启动后自动对比 GitHub Releases，右上角提示是否已是最新版；网络不可用时会提示更新检查失败。
-- **日志错误解释**：运行日志遇到常见错误时会自动追加简单原因和处理建议，方便普通用户排查。
+- **日志错误解释**：运行失败时保留原始异常、类型、代码行和命令，并为常见错误自动追加简单原因和处理建议。
 - **首次启动免责声明**：首次打开会提醒“本项目仅用于交流学习，有能力者请多多支持正版”。
 - **高 DPI 适配与版本显示**：适配高分辨率屏幕，并在右下角显示当前版本号。
 - **数据稳定**：启动前恢复 AuthOnlyOnline 网络，避免套牌 / 环境数据在启动断网窗口里加载失败。
@@ -173,9 +173,13 @@ Firestone2Green/
 
 ### hosts 不存在、被保存成 hosts.txt，或提示被保护怎么办？
 
-新版会读取 Windows 注册表中的实际 hosts 目录，不再只认固定路径；缺少无扩展名 `hosts` 时会自动创建，只有 `hosts.txt` 时会复制内容并保留原文件。写入前还会自动解除只读、重试短时占用、临时修复文件 ACL，并把原内容备份到 `%LOCALAPPDATA%\Firestone2Green\hosts-backups`（最多保留 10 份）。
+新版会读取 Windows 注册表中的实际 hosts 目录，不再只认固定路径；缺少无扩展名 `hosts` 时会自动创建，`hosts` 不存在、为零字节或只有空白内容时，会先恢复 Windows 默认 HOSTS 模板，再加入 Firestone2Green 阻断段。只有 `hosts.txt` 时会复制内容并保留原文件；如果 `hosts.txt` 也是空的，目标 `hosts` 同样会恢复默认模板。已有非空 hosts 内容不会被覆盖。写入前还会自动解除只读、重试短时占用、临时修复文件 ACL，并把原内容备份到 `%LOCALAPPDATA%\Firestone2Green\hosts-backups`（最多保留 10 份）。
 
 如果日志仍显示 `HOSTS_PROTECTION_ACTIVE`、`HOSTS_FILE_BUSY`、`HOSTS_CREATE_FAILED` 或 `HOSTS_WRITE_VERIFY_FAILED`，按日志关闭安全软件的 **Hosts 保护 / 系统文件防护**，或允许 `Firestone2Green.exe` 和 `powershell.exe` 修改 hosts，然后重新点击原按钮即可。不要下载所谓“hosts 修复文件”，也不要手工给 Everyone / Users 完全控制权限；无需联系作者。
+
+### 日志出现退出码 1 时如何定位？
+
+从 v0.2.3 开始，日志会直接显示 `F2G_ERROR`、`F2G_ERROR_TYPE`、`F2G_ERROR_LINE` 和 `F2G_ERROR_COMMAND`，对应真正的异常内容、类型、原始代码行和命令，不会再把最外层错误处理代码误报为故障位置。需要进一步排查时，点击 **打开报告**，查看最新的 `FirestoneOfflineReport_*.json`。
 
 ### 数据、套牌或联网功能无法使用怎么办？
 
