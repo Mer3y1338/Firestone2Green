@@ -43,7 +43,7 @@
 - v0.2.3 的 `F2G_ERROR`、`F2G_ERROR_TYPE`、`F2G_ERROR_LINE`、`F2G_ERROR_COMMAND` 原始异常定位保持不变。
 - hosts 缺失、空白或只有 `hosts.txt` 时的自动恢复，以及动态路径、只读解除、临时 ACL 接管和恢复、备份、写后校验与失败回滚保持不变。
 - 一键授权、头像修复、`AuthOnlyOnline` 网络恢复、路径搜索、持续修复、静默快捷方式和 GitHub 更新检查保持不变。
-- `D:\Code\DESIGN-claude.md` 的内容和视觉规范未修改。
+- 项目设计规范文件的内容和视觉规范未修改。
 
 ## 升级说明
 
