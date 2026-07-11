@@ -26,7 +26,7 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 
 - **One-click workflow**: Provides a WinForms GUI for common operations.
 - **Single-file distribution**: The EXE embeds `scripts/Firestone2Green.ps1` and the default avatar resource.
-- **Adaptive path detection**: Automatically searches for or lets the user select the Overwolf root folder. The correct folder must directly contain `OverwolfLauncher.exe` or `Overwolf.exe`, so it no longer depends on a fixed `D:\overwolf` install path.
+- **Adaptive path detection**: Automatically searches for or lets the user select the Overwolf root folder. The correct folder must directly contain `OverwolfLauncher.exe` or `Overwolf.exe`, so it no longer depends on a fixed drive letter or install directory.
 - **Local authorization**: Restores the local authorization state and then keeps normal Firestone / Overwolf network functionality available.
 - **Avatar repair**: Replaces only the Firestone bottom-left login / account avatar.
 - **Safe avatar targeting**: Does not replace Battlegrounds hero portraits, meta deck icons, deck icons, card images, or other content artwork.
@@ -35,8 +35,11 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 - **Automatic update check**: Checks GitHub Releases on startup and shows the result in the top-right status area; network failures show an update-check warning.
 - **Preserved root-cause errors**: Failed runs now keep the original exception, type, source line, and command, while still adding short explanations and suggested fixes for common errors.
 - **First-run disclaimer**: Shows a short learning-only / support-official disclaimer on first launch.
-- **High-DPI support and version display**: Adds DPI-aware manifest settings and a bottom-right version label.
+- **Responsive high-DPI interface**: Reflows the WinForms layout for 100%–200% scaling, narrow windows, and small working areas. Compact layouts hide secondary copy, keep the footer slim and fixed, place GitHub on the left, and keep the version at the far right.
 - **Stable data loading**: Switches to `AuthOnlyOnline` before starting Firestone, so deck data, meta data, and tracker data can load normally.
+
+> [!NOTE]
+> v0.2.4 passed real 100% window-geometry checks and simulated 125%–200% DPI layout audits. The left-side priority remains **one-click repair → persistence/package → fine control**.
 
 ## Quick Start
 

@@ -18,9 +18,9 @@ using Microsoft.Win32;
 [assembly: AssemblyProduct("Firestone2Green")]
 [assembly: AssemblyDescription("Firestone2Green local repair tool")]
 [assembly: AssemblyCompany("Mer3y")]
-[assembly: AssemblyVersion("0.2.3.0")]
-[assembly: AssemblyFileVersion("0.2.3.0")]
-[assembly: AssemblyInformationalVersion("0.2.3")]
+[assembly: AssemblyVersion("0.2.4.0")]
+[assembly: AssemblyFileVersion("0.2.4.0")]
+[assembly: AssemblyInformationalVersion("0.2.4")]
 
 namespace Firestone2Green
 {
@@ -65,7 +65,7 @@ namespace Firestone2Green
         private const string DisclaimerFileName = "disclaimer.ok";
         private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
         private const string OverwolfMainFile = "Overwolf.exe";
-        private const string AppVersion = "0.2.3";
+        private const string AppVersion = "0.2.4";
         private const string OfficialRepoUrl = "https://github.com/Mer3y1338/Firestone2Green";
         private const string OfficialGroupJoinUrl = "https://qm.qq.com/q/ZP3oGLAlQ4";
         private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
@@ -83,15 +83,21 @@ namespace Firestone2Green
         private TableLayoutPanel shellLayout;
         private TableLayoutPanel mainLayout;
         private TableLayoutPanel footerGrid;
+        private TableLayoutPanel heroGrid, heroCopyGrid, heroSideGrid;
+        private TableLayoutPanel leftStack, rightStack, pathGrid, primaryGrid, controlsGrid, maintenanceGrid, logGrid;
+        private Card heroCard, heroAvatarCard, pathCard, pathInputCard, primaryCard, controlsCard, maintenanceCard, logCard, logSurfaceCard;
         private Control leftPane;
         private Control rightPane;
-        private Label footerCopy;
+        private Label heroKicker, pathDescription, logHint, logFootnote;
+        private Label footerCopy, footerGroup, footerVersion;
         private Control footerActions;
         private Panel footerBar;
         private Panel windowChrome;
         private Control windowControls;
         private ChromeButton maximizeChromeButton;
         private bool compactLayout;
+        private bool denseLayout;
+        private int appliedLayoutDpi;
         private bool resizeRedrawFrozen;
         private RichTextBox logBox;
         private TextBox overwolfRootBox;
@@ -126,6 +132,9 @@ namespace Firestone2Green
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hWnd);
+
         public MainForm()
         {
             baseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -139,6 +148,13 @@ namespace Firestone2Green
             if (string.IsNullOrEmpty(overwolfRoot)) overwolfRoot = FindOverwolfRoot(false);
             BuildUi();
             RefreshEnvironmentLabels();
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            ConstrainWindowToWorkingArea(true);
+            ApplyResponsiveLayout(true);
         }
 
         protected override void OnShown(EventArgs e)
@@ -162,7 +178,7 @@ namespace Firestone2Green
             catch { }
             Width = 1180;
             Height = 900;
-            MinimumSize = new Size(880, 640);
+            MinimumSize = new Size(560, 420);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = P.Hairline;
             Font = new Font("Microsoft YaHei UI", 9F);
@@ -231,9 +247,9 @@ namespace Firestone2Green
                            "完全免费，仅在 GitHub 发布；付费购买就是被骗了。帮到你欢迎点 Star。", 8.3F, FontStyle.Regular, P.OnDarkSoft);
             footerCopy.TextAlign = ContentAlignment.MiddleLeft;
             footerCopy.AutoEllipsis = false;
-            Label version = L("v" + AppVersion, 8.5F, FontStyle.Bold, P.OnDarkSoft);
-            version.AutoEllipsis = false;
-            version.TextAlign = ContentAlignment.MiddleCenter;
+            footerVersion = L("v" + AppVersion, 8.5F, FontStyle.Bold, P.OnDarkSoft);
+            footerVersion.AutoEllipsis = false;
+            footerVersion.TextAlign = ContentAlignment.MiddleCenter;
 
             TableLayoutPanel footerRight = Grid(4, 1);
             footerRight.Margin = Padding.Empty;
@@ -244,16 +260,16 @@ namespace Firestone2Green
             footerRight.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 18));
             footerRight.RowStyles.Clear();
             footerRight.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            Label groupLabel = L("官方群: 630855391", 8.5F, FontStyle.Bold, P.OnDarkSoft);
-            groupLabel.TextAlign = ContentAlignment.MiddleCenter;
-            groupLabel.AutoEllipsis = false;
+            footerGroup = L("官方群: 630855391", 8.5F, FontStyle.Bold, P.OnDarkSoft);
+            footerGroup.TextAlign = ContentAlignment.MiddleCenter;
+            footerGroup.AutoEllipsis = false;
 
             NiceButton joinGroup = FooterButton("加群", 3, delegate { OpenUrl(OfficialGroupJoinUrl, "QQ 官方群"); });
             NiceButton github = FooterButton("GitHub", 3, delegate { OpenUrl(OfficialRepoUrl, "GitHub"); });
             footerRight.Controls.Add(github, 0, 0);
-            footerRight.Controls.Add(groupLabel, 1, 0);
+            footerRight.Controls.Add(footerGroup, 1, 0);
             footerRight.Controls.Add(joinGroup, 2, 0);
-            footerRight.Controls.Add(version, 3, 0);
+            footerRight.Controls.Add(footerVersion, 3, 0);
             footerActions = footerRight;
             footerGrid.Margin = Padding.Empty;
             footerGrid.Controls.Add(footerCopy, 0, 0);
@@ -270,6 +286,7 @@ namespace Firestone2Green
             AppendLog("头像资源: " + avatarPath);
             AppendLog("Firestone/Overwolf 路径: " + (string.IsNullOrEmpty(overwolfRoot) ? "未选择（运行时会自动搜索）" : overwolfRoot));
             AppendLog("推荐流程：先确认/搜索 Firestone 路径，再点击“一键重启并授权”；需要持久化时点击“安装持续修复”（只安装监听，不会主动启动 Firestone），以后用桌面“Firestone2Green 启动 Firestone”快捷方式启动。");
+            ApplyResponsiveLayout(true);
             FitRootToViewport();
         }
 
@@ -328,6 +345,7 @@ namespace Firestone2Green
             {
                 PostToUi(delegate
                 {
+                    ConstrainWindowToWorkingArea(false);
                     ApplyResponsiveLayout(true);
                     FitRootToViewport();
                 });
@@ -382,14 +400,78 @@ namespace Firestone2Green
             if (maximizeChromeButton != null) maximizeChromeButton.Invalidate();
         }
 
-        private int ScaleUi(int logicalPixels)
+        private int GetCurrentDpi()
         {
             try
             {
-                using (Graphics g = CreateGraphics())
-                    return Math.Max(1, (int)Math.Round(logicalPixels * g.DpiX / 96F));
+                if (IsHandleCreated)
+                {
+                    uint dpi = GetDpiForWindow(Handle);
+                    if (dpi >= 96 && dpi <= 768) return (int)dpi;
+                }
             }
-            catch { return logicalPixels; }
+            catch (EntryPointNotFoundException) { }
+            catch { }
+            try
+            {
+                using (Graphics g = CreateGraphics())
+                    return Math.Max(96, (int)Math.Round(g.DpiX));
+            }
+            catch { return 96; }
+        }
+
+        private int ScaleUi(int logicalPixels)
+        {
+            if (logicalPixels == 0) return 0;
+            return Math.Max(1, (int)Math.Round(logicalPixels * GetCurrentDpi() / 96F));
+        }
+
+        private Padding ScalePadding(int left, int top, int right, int bottom)
+        {
+            return new Padding(ScaleUi(left), ScaleUi(top), ScaleUi(right), ScaleUi(bottom));
+        }
+
+        private int ToLogicalPixels(int physicalPixels)
+        {
+            return Math.Max(1, (int)Math.Floor(physicalPixels * 96F / GetCurrentDpi()));
+        }
+
+        private void ConstrainWindowToWorkingArea(bool useIdealSize)
+        {
+            if (!IsHandleCreated || WindowState != FormWindowState.Normal) return;
+            try
+            {
+                Rectangle work = Screen.FromHandle(Handle).WorkingArea;
+                int edge = ScaleUi(12);
+                int maxWidth = Math.Max(ScaleUi(480), work.Width - edge * 2);
+                int maxHeight = Math.Max(ScaleUi(360), work.Height - edge * 2);
+                Size minimum = new Size(
+                    Math.Min(ScaleUi(560), maxWidth),
+                    Math.Min(ScaleUi(420), maxHeight));
+                if (MinimumSize != minimum) MinimumSize = minimum;
+
+                Size target = Size;
+                if (useIdealSize)
+                {
+                    target = new Size(
+                        Math.Min(ScaleUi(1180), maxWidth),
+                        Math.Min(ScaleUi(900), maxHeight));
+                }
+                else
+                {
+                    target = new Size(
+                        Math.Max(minimum.Width, Math.Min(target.Width, maxWidth)),
+                        Math.Max(minimum.Height, Math.Min(target.Height, maxHeight)));
+                }
+                if (Size != target) Size = target;
+
+                int x = useIdealSize ? work.Left + (work.Width - target.Width) / 2 : Left;
+                int y = useIdealSize ? work.Top + (work.Height - target.Height) / 2 : Top;
+                x = Math.Max(work.Left, Math.Min(x, work.Right - target.Width));
+                y = Math.Max(work.Top, Math.Min(y, work.Bottom - target.Height));
+                if (Location != new Point(x, y)) Location = new Point(x, y);
+            }
+            catch { }
         }
 
         private void PostToUi(Action action)
@@ -414,9 +496,16 @@ namespace Firestone2Green
 
             int availableWidth = viewportPanel.ClientSize.Width;
             if (availableWidth <= 0) return;
-            bool useCompact = availableWidth < ScaleUi(980);
-            if (!force && useCompact == compactLayout) return;
+            int logicalWidth = ToLogicalPixels(availableWidth);
+            bool useCompact = logicalWidth < 980;
+            bool useDense = logicalWidth < 680;
+            if (!force && useCompact == compactLayout && useDense == denseLayout)
+            {
+                FitRootToViewport();
+                return;
+            }
             compactLayout = useCompact;
+            denseLayout = useDense;
 
             mainLayout.SuspendLayout();
             footerGrid.SuspendLayout();
@@ -436,19 +525,14 @@ namespace Firestone2Green
                     mainLayout.ColumnCount = 1;
                     mainLayout.RowCount = 2;
                     mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                    mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleUi(576)));
-                    mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleUi(610)));
-                    leftPane.Margin = new Padding(0, 0, 0, ScaleUi(16));
-                    rightPane.Margin = new Padding(0);
+                    mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleUi(denseLayout ? 550 : 560)));
+                    mainLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleUi(denseLayout ? 580 : 610)));
+                    leftPane.Margin = new Padding(0, 0, 0, ScaleUi(denseLayout ? 12 : 16));
+                    rightPane.Margin = Padding.Empty;
                     mainLayout.Controls.Add(leftPane, 0, 0);
                     mainLayout.Controls.Add(rightPane, 0, 1);
-                    rootLayout.MinimumSize = new Size(ScaleUi(620), ScaleUi(1396));
 
-                    // Compact mode keeps only the essential actions in one row.
-                    // The explanatory copy remains available in the regular desktop layout.
                     footerCopy.Visible = false;
-                    shellLayout.RowStyles[2].Height = ScaleUi(60);
-                    footerBar.Padding = new Padding(ScaleUi(18), ScaleUi(4), ScaleUi(18), ScaleUi(6));
                     footerGrid.ColumnCount = 1;
                     footerGrid.RowCount = 1;
                     footerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -463,14 +547,11 @@ namespace Firestone2Green
                     mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 57));
                     mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
                     leftPane.Margin = new Padding(0, 0, ScaleUi(18), 0);
-                    rightPane.Margin = new Padding(0);
+                    rightPane.Margin = Padding.Empty;
                     mainLayout.Controls.Add(leftPane, 0, 0);
                     mainLayout.Controls.Add(rightPane, 1, 0);
-                    rootLayout.MinimumSize = new Size(ScaleUi(900), ScaleUi(770));
 
                     footerCopy.Visible = true;
-                    shellLayout.RowStyles[2].Height = ScaleUi(64);
-                    footerBar.Padding = new Padding(ScaleUi(20), ScaleUi(4), ScaleUi(20), ScaleUi(6));
                     footerGrid.ColumnCount = 2;
                     footerGrid.RowCount = 1;
                     footerGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
@@ -486,8 +567,236 @@ namespace Firestone2Green
                 footerGrid.ResumeLayout(true);
                 mainLayout.ResumeLayout(true);
             }
+            ApplyDpiMetrics(true);
             FinalizeResponsiveLayout();
             PostToUi(FinalizeResponsiveLayout);
+        }
+
+        private void SetAbsoluteRow(TableLayoutPanel panel, int index, int logicalHeight)
+        {
+            if (panel == null || index < 0 || index >= panel.RowStyles.Count) return;
+            panel.RowStyles[index].SizeType = SizeType.Absolute;
+            panel.RowStyles[index].Height = ScaleUi(logicalHeight);
+        }
+
+        private void ApplyDpiMetrics(bool force)
+        {
+            int dpi = GetCurrentDpi();
+            if (!force && appliedLayoutDpi == dpi) return;
+            appliedLayoutDpi = dpi;
+
+            if (shellLayout != null && shellLayout.RowStyles.Count >= 3)
+            {
+                SetAbsoluteRow(shellLayout, 0, 34);
+                SetAbsoluteRow(shellLayout, 2, denseLayout ? 48 : (compactLayout ? 54 : 64));
+            }
+            if (windowControls != null) windowControls.Width = ScaleUi(132);
+
+            if (rootLayout != null)
+            {
+                rootLayout.Padding = denseLayout ? ScalePadding(16, 10, 16, 10) : ScalePadding(20, 12, 20, 10);
+                rootLayout.MinimumSize = new Size(
+                    ScaleUi(denseLayout ? 520 : (compactLayout ? 620 : 900)),
+                    ScaleUi(denseLayout ? 1320 : (compactLayout ? 1380 : 770)));
+                SetAbsoluteRow(rootLayout, 0, denseLayout ? 156 : 178);
+            }
+            if (mainLayout != null) mainLayout.Margin = new Padding(0, ScaleUi(10), 0, 0);
+
+            if (heroCard != null)
+            {
+                heroCard.Padding = denseLayout ? ScalePadding(18, 12, 18, 12) : ScalePadding(24, 18, 24, 16);
+                heroCard.Radius = ScaleUi(16);
+            }
+            if (heroGrid != null && heroGrid.ColumnStyles.Count >= 2)
+            {
+                heroGrid.ColumnStyles[0].SizeType = SizeType.Percent;
+                heroGrid.ColumnStyles[0].Width = compactLayout ? 100 : 68;
+                heroGrid.ColumnStyles[1].SizeType = SizeType.Percent;
+                heroGrid.ColumnStyles[1].Width = compactLayout ? 0 : 32;
+            }
+            if (heroSideGrid != null) heroSideGrid.Visible = !compactLayout;
+            if (heroKicker != null) heroKicker.Visible = !denseLayout;
+            if (scriptPill != null) scriptPill.Visible = !denseLayout;
+            if (avatarPill != null) avatarPill.Visible = !denseLayout;
+            if (heroCopyGrid != null && heroCopyGrid.RowStyles.Count >= 4)
+            {
+                SetAbsoluteRow(heroCopyGrid, 0, denseLayout ? 0 : 18);
+                SetAbsoluteRow(heroCopyGrid, 1, denseLayout ? 46 : 50);
+                SetAbsoluteRow(heroCopyGrid, 2, denseLayout ? 22 : 24);
+                heroCopyGrid.RowStyles[3].SizeType = SizeType.Percent;
+                heroCopyGrid.RowStyles[3].Height = 100;
+            }
+            if (heroAvatarCard != null)
+            {
+                heroAvatarCard.Margin = new Padding(ScaleUi(12), 0, 0, 0);
+                heroAvatarCard.Padding = new Padding(ScaleUi(8));
+                heroAvatarCard.Radius = ScaleUi(12);
+            }
+
+            if (leftStack != null && leftStack.RowStyles.Count >= 3)
+            {
+                SetAbsoluteRow(leftStack, 0, denseLayout ? 154 : 158);
+                SetAbsoluteRow(leftStack, 1, 218);
+                SetAbsoluteRow(leftStack, 2, denseLayout ? 178 : 184);
+            }
+            if (rightStack != null && rightStack.RowStyles.Count >= 2)
+                SetAbsoluteRow(rightStack, 0, denseLayout ? 184 : 190);
+
+            if (primaryCard != null)
+            {
+                primaryCard.Margin = new Padding(0, 0, 0, ScaleUi(14));
+                primaryCard.Padding = ScalePadding(18, 10, 18, 10);
+                primaryCard.Radius = ScaleUi(16);
+            }
+            if (primaryGrid != null && primaryGrid.RowStyles.Count >= 4)
+            {
+                SetAbsoluteRow(primaryGrid, 0, 18);
+                SetAbsoluteRow(primaryGrid, 1, 30);
+                SetAbsoluteRow(primaryGrid, 2, 24);
+            }
+
+            if (maintenanceCard != null)
+            {
+                maintenanceCard.Margin = new Padding(0, 0, 0, ScaleUi(14));
+                maintenanceCard.Padding = ScalePadding(18, 12, 18, 12);
+                maintenanceCard.Radius = ScaleUi(16);
+            }
+            if (maintenanceGrid != null && maintenanceGrid.RowStyles.Count >= 5)
+            {
+                SetAbsoluteRow(maintenanceGrid, 0, 18);
+                SetAbsoluteRow(maintenanceGrid, 1, 28);
+                SetAbsoluteRow(maintenanceGrid, 2, 0);
+                SetAbsoluteRow(maintenanceGrid, 3, 90);
+                SetAbsoluteRow(maintenanceGrid, 4, denseLayout ? 40 : 44);
+            }
+
+            if (controlsCard != null)
+            {
+                controlsCard.Padding = ScalePadding(18, 14, 18, 14);
+                controlsCard.Radius = ScaleUi(16);
+            }
+            if (controlsGrid != null && controlsGrid.RowStyles.Count >= 4)
+            {
+                SetAbsoluteRow(controlsGrid, 0, 18);
+                SetAbsoluteRow(controlsGrid, 1, 28);
+                SetAbsoluteRow(controlsGrid, 2, 8);
+            }
+
+            if (pathCard != null)
+            {
+                pathCard.Margin = new Padding(0, 0, 0, ScaleUi(denseLayout ? 12 : 14));
+                pathCard.Padding = denseLayout ? ScalePadding(18, 14, 18, 14) : ScalePadding(22, 16, 22, 16);
+                pathCard.Radius = ScaleUi(16);
+            }
+            if (pathGrid != null && pathGrid.RowStyles.Count >= 4)
+            {
+                SetAbsoluteRow(pathGrid, 0, denseLayout ? 20 : 22);
+                SetAbsoluteRow(pathGrid, 1, denseLayout ? 24 : 26);
+                SetAbsoluteRow(pathGrid, 2, denseLayout ? 44 : 48);
+            }
+            if (pathInputCard != null)
+            {
+                pathInputCard.Padding = denseLayout ? ScalePadding(10, 7, 10, 5) : ScalePadding(12, 8, 12, 6);
+                pathInputCard.Margin = new Padding(0, ScaleUi(2), 0, ScaleUi(6));
+                pathInputCard.Radius = ScaleUi(14);
+            }
+            if (pathDescription != null)
+            {
+                if (pathDescription.Tag == null) pathDescription.Tag = pathDescription.Text;
+                pathDescription.Text = denseLayout
+                    ? "\u9009\u62e9\u5305\u542b OverwolfLauncher.exe \u6216 Overwolf.exe \u7684\u76ee\u5f55\u3002"
+                    : Convert.ToString(pathDescription.Tag);
+            }
+
+            if (logCard != null)
+            {
+                logCard.Padding = denseLayout ? ScalePadding(18, 16, 18, 18) : ScalePadding(22, 20, 22, 22);
+                logCard.Radius = ScaleUi(16);
+            }
+            if (logGrid != null && logGrid.RowStyles.Count >= 3)
+            {
+                SetAbsoluteRow(logGrid, 0, denseLayout ? 38 : 44);
+                logGrid.RowStyles[1].SizeType = SizeType.Percent;
+                logGrid.RowStyles[1].Height = 100;
+                SetAbsoluteRow(logGrid, 2, denseLayout ? 24 : 30);
+            }
+            if (logHint != null) logHint.Visible = !denseLayout;
+            if (logFootnote != null)
+            {
+                if (logFootnote.Tag == null) logFootnote.Tag = logFootnote.Text;
+                logFootnote.Text = denseLayout
+                    ? "\u6570\u636e\u672a\u5237\u65b0\uff1a\u6062\u590d\u5168\u529f\u80fd\u7f51\u7edc \u2192 \u9a8c\u8bc1\u72b6\u6001\u3002"
+                    : Convert.ToString(logFootnote.Tag);
+            }
+            if (logSurfaceCard != null)
+            {
+                logSurfaceCard.Padding = denseLayout ? ScalePadding(12, 11, 12, 11) : ScalePadding(15, 14, 15, 14);
+                logSurfaceCard.Radius = ScaleUi(20);
+            }
+
+            if (footerBar != null)
+                footerBar.Padding = denseLayout ? ScalePadding(12, 2, 12, 3) :
+                    (compactLayout ? ScalePadding(16, 3, 16, 4) : ScalePadding(20, 4, 20, 6));
+            TableLayoutPanel actions = footerActions as TableLayoutPanel;
+            if (actions != null && actions.ColumnStyles.Count >= 4)
+            {
+                float[] widths = denseLayout ? new float[] { 28, 32, 18, 22 } : new float[] { 25, 39, 18, 18 };
+                for (int i = 0; i < 4; i++)
+                {
+                    actions.ColumnStyles[i].SizeType = SizeType.Percent;
+                    actions.ColumnStyles[i].Width = widths[i];
+                }
+            }
+            if (footerGroup != null)
+            {
+                if (footerGroup.Tag == null) footerGroup.Tag = footerGroup.Text;
+                footerGroup.Text = denseLayout ? "QQ 630855391" : Convert.ToString(footerGroup.Tag);
+            }
+
+            ApplyInteractiveMetrics(rootLayout);
+            ApplyInteractiveMetrics(footerActions);
+        }
+
+        private void ApplyInteractiveMetrics(Control parent)
+        {
+            if (parent == null) return;
+            foreach (Control child in parent.Controls)
+            {
+                NiceButton button = child as NiceButton;
+                if (button != null)
+                {
+                    if (button.Kind == 3)
+                    {
+                        button.MinimumSize = new Size(ScaleUi(44), ScaleUi(denseLayout ? 34 : 38));
+                        button.Margin = denseLayout ? ScalePadding(3, 2, 3, 2) : ScalePadding(4, 3, 4, 3);
+                    }
+                    else
+                    {
+                        button.MinimumSize = new Size(ScaleUi(96), ScaleUi(40));
+                        button.Margin = ScalePadding(6, 2, 6, 2);
+                    }
+                }
+                NiceCheck check = child as NiceCheck;
+                if (check != null)
+                {
+                    check.MinimumSize = new Size(0, ScaleUi(28));
+                    check.Margin = new Padding(0, ScaleUi(6), ScaleUi(8), ScaleUi(6));
+                }
+                NumberStepper stepper = child as NumberStepper;
+                if (stepper != null)
+                {
+                    stepper.MinimumSize = new Size(ScaleUi(92), ScaleUi(32));
+                    stepper.Margin = new Padding(0, ScaleUi(6), 0, ScaleUi(6));
+                }
+                Pill pill = child as Pill;
+                if (pill != null)
+                {
+                    pill.Padding = ScalePadding(12, 5, 12, 5);
+                    pill.MinimumSize = new Size(0, ScaleUi(24));
+                    pill.Margin = new Padding(0, 0, ScaleUi(8), ScaleUi(6));
+                }
+                ApplyInteractiveMetrics(child);
+            }
         }
 
         private void FinalizeResponsiveLayout()
@@ -602,18 +911,21 @@ namespace Firestone2Green
         private Control BuildHero()
         {
             Card hero = NewCard();
+            heroCard = hero;
             hero.Padding = new Padding(24, 18, 24, 16);
             hero.Radius = 16;
             hero.Shadow = 0;
             hero.Fill = P.SurfaceCard;
 
             TableLayoutPanel g = Grid(2, 1);
+            heroGrid = g;
             g.ColumnStyles.Clear();
             g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
             g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
             hero.Controls.Add(g);
 
             TableLayoutPanel copy = Grid(1, 4);
+            heroCopyGrid = copy;
             copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
             copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
             copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
@@ -644,7 +956,10 @@ namespace Firestone2Green
             pills.Controls.Add(statusPill);
             copy.Controls.Add(pills, 0, 3);
 
+            heroKicker = copy.GetControlFromPosition(0, 0) as Label;
+
             TableLayoutPanel side = Grid(2, 1);
+            heroSideGrid = side;
             side.ColumnStyles.Clear();
             side.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 63));
             side.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 37));
@@ -660,6 +975,7 @@ namespace Firestone2Green
             side.Controls.Add(metrics, 0, 0);
 
             Card avatar = NewCard();
+            heroAvatarCard = avatar;
             avatar.Fill = P.Canvas;
             avatar.Shadow = 0;
             avatar.Radius = 12;
@@ -866,6 +1182,7 @@ namespace Firestone2Green
         private Control BuildLeft()
         {
             TableLayoutPanel stack = Grid(1, 3);
+            leftStack = stack;
             stack.Margin = new Padding(0);
             stack.RowStyles.Clear();
             stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 158));
@@ -880,6 +1197,7 @@ namespace Firestone2Green
         private Control BuildRight()
         {
             TableLayoutPanel stack = Grid(1, 2);
+            rightStack = stack;
             stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
             stack.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             stack.Controls.Add(BuildPathPicker(), 0, 0);
@@ -890,9 +1208,11 @@ namespace Firestone2Green
         private Control BuildPathPicker()
         {
             Card c = NewCard();
+            pathCard = c;
             c.Margin = new Padding(0, 0, 0, 14);
             c.Padding = new Padding(22, 16, 22, 16);
             TableLayoutPanel g = Grid(1, 4);
+            pathGrid = g;
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
@@ -901,7 +1221,10 @@ namespace Firestone2Green
             g.Controls.Add(L("路径设置", 8.5F, FontStyle.Bold, P.Muted), 0, 0);
             g.Controls.Add(L("选择 Overwolf 根目录，需直接包含 OverwolfLauncher.exe 或 Overwolf.exe。", 10.2F, FontStyle.Bold, P.Ink), 0, 1);
 
+            pathDescription = g.GetControlFromPosition(0, 1) as Label;
+
             Card input = NewCard();
+            pathInputCard = input;
             input.Fill = P.Canvas;
             input.Shadow = 0;
             input.Radius = 14;
@@ -944,9 +1267,11 @@ namespace Firestone2Green
         private Control BuildPrimary()
         {
             Card c = NewCard();
+            primaryCard = c;
             c.Margin = new Padding(0, 0, 0, 14);
             c.Padding = new Padding(18, 10, 18, 10);
             TableLayoutPanel g = Grid(1, 4);
+            primaryGrid = g;
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
@@ -964,9 +1289,11 @@ namespace Firestone2Green
         private Control BuildControls()
         {
             Card c = NewCard();
+            controlsCard = c;
             c.Margin = new Padding(0);
             c.Padding = new Padding(18, 14, 18, 14);
             TableLayoutPanel g = Grid(1, 4);
+            controlsGrid = g;
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));
@@ -991,9 +1318,11 @@ namespace Firestone2Green
         private Control BuildMaintenance()
         {
             Card c = NewCard();
+            maintenanceCard = c;
             c.Margin = new Padding(0, 0, 0, 14);
             c.Padding = new Padding(18, 12, 18, 12);
             TableLayoutPanel g = Grid(1, 5);
+            maintenanceGrid = g;
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 18));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
@@ -1046,23 +1375,29 @@ namespace Firestone2Green
         private Control BuildLog()
         {
             Card c = NewCard();
+            logCard = c;
             c.Padding = new Padding(22, 20, 22, 22);
             TableLayoutPanel g = Grid(1, 3);
+            logGrid = g;
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
             g.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             g.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             c.Controls.Add(g);
             TableLayoutPanel head = Grid(2, 1);
+            head.RowStyles.Clear();
+            head.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             head.ColumnStyles.Clear();
             head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
             head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
             head.Controls.Add(L("运行日志", 14.5F, FontStyle.Bold, P.Ink), 0, 0);
             Label hint = L("实时输出 · JSON 报告自动保存", 9F, FontStyle.Regular, P.Muted);
             hint.TextAlign = ContentAlignment.MiddleRight;
+            logHint = hint;
             head.Controls.Add(hint, 1, 0);
             g.Controls.Add(head, 0, 0);
 
             Card box = NewCard();
+            logSurfaceCard = box;
             box.Fill = P.SurfaceDark;
             box.Border = P.SurfaceDarkElevated;
             box.Shadow = 0;
@@ -1085,6 +1420,7 @@ namespace Firestone2Green
             box.Controls.Add(logBox);
 
             g.Controls.Add(L("完成后如果套牌/数据仍不刷新，点“恢复全功能网络”再点“验证状态”。", 8.8F, FontStyle.Regular, P.Muted), 0, 2);
+            logFootnote = g.GetControlFromPosition(0, 2) as Label;
             return c;
         }
 
@@ -2340,9 +2676,13 @@ namespace Firestone2Green
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            Rectangle r = new Rectangle(2, 2, Width - 5, Height - 6);
+            float dpi = Math.Max(1F, e.Graphics.DpiX / 96F);
+            int edge = Math.Max(2, (int)Math.Round(2 * dpi));
+            int bottom = Math.Max(edge + 1, (int)Math.Round(3 * dpi));
+            Rectangle r = new Rectangle(edge, edge, Width - edge * 2 - 1, Height - edge - bottom);
             if (r.Width < 4 || r.Height < 4) return;
-            int radius = Math.Max(6, Math.Min(8, Math.Min(r.Width, r.Height) / 2 - 1));
+            int wantedRadius = Math.Max(6, (int)Math.Round(8 * dpi));
+            int radius = Math.Max(4, Math.Min(wantedRadius, Math.Min(r.Width, r.Height) / 2 - 1));
             Color fill, border, text;
             if (!Enabled) { fill = P.Hairline; border = P.Hairline; text = P.Muted; }
             else if (Kind == 0) { fill = down ? P.PrimaryActive : P.Primary; border = down ? P.PrimaryActive : P.Primary; text = Color.White; }
@@ -2359,13 +2699,14 @@ namespace Firestone2Green
             Rectangle textRect = r;
             if (Kind == 0)
             {
-                int reserve = Math.Min(54, Math.Max(42, r.Height + 8));
-                if (r.Width > reserve * 2 + 40)
+                int reserve = Math.Min((int)Math.Round(54 * dpi), Math.Max((int)Math.Round(42 * dpi), r.Height + (int)Math.Round(8 * dpi)));
+                if (r.Width > reserve * 2 + (int)Math.Round(40 * dpi))
                     textRect = new Rectangle(r.X + reserve, r.Y, r.Width - reserve * 2, r.Height);
             }
             else
             {
-                textRect = new Rectangle(r.X + 10, r.Y, r.Width - 20, r.Height);
+                int textPad = Math.Max(10, (int)Math.Round(10 * dpi));
+                textRect = new Rectangle(r.X + textPad, r.Y, Math.Max(0, r.Width - textPad * 2), r.Height);
             }
             TextRenderer.DrawText(
                 e.Graphics,
@@ -2384,6 +2725,7 @@ namespace Firestone2Green
         public int Minimum = 5;
         public int Maximum = 120;
         private bool hoverUp, hoverDown, downUp, downDown;
+        private float dpiScale = 1F;
         public int Value
         {
             get { return val; }
@@ -2418,16 +2760,19 @@ namespace Firestone2Green
         protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Up) { Value++; e.Handled = true; } if (e.KeyCode == Keys.Down) { Value--; e.Handled = true; } base.OnKeyDown(e); }
         private void Buttons(out Rectangle up, out Rectangle down)
         {
-            int s = Height - 10;
-            down = new Rectangle(5, 5, s, s);
-            up = new Rectangle(Width - s - 5, 5, s, s);
+            int pad = Math.Max(4, (int)Math.Round(5 * dpiScale));
+            int size = Math.Max(1, Height - pad * 2);
+            down = new Rectangle(pad, pad, size, size);
+            up = new Rectangle(Math.Max(pad, Width - size - pad), pad, size, size);
         }
         protected override void OnPaintBackground(PaintEventArgs e) { e.Graphics.Clear(P.SurfaceCard); }
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Rectangle r = new Rectangle(1, 1, Width - 3, Height - 3);
-            using (GraphicsPath path = D.Round(r, 15))
+            dpiScale = Math.Max(1F, e.Graphics.DpiX / 96F);
+            int edge = Math.Max(1, (int)Math.Round(dpiScale));
+            Rectangle r = new Rectangle(edge, edge, Width - edge * 2 - 1, Height - edge * 2 - 1);
+            using (GraphicsPath path = D.Round(r, Math.Max(8, (int)Math.Round(15 * dpiScale))))
             using (SolidBrush bg = new SolidBrush(P.Canvas))
             using (Pen pen = new Pen(P.Hairline))
             {
@@ -2437,7 +2782,8 @@ namespace Firestone2Green
             Rectangle up, down; Buttons(out up, out down);
             DrawStep(e.Graphics, up, true, hoverUp, downUp);
             DrawStep(e.Graphics, down, false, hoverDown, downDown);
-            Rectangle tr = new Rectangle(34, 0, Width - 68, Height - 1);
+            int gap = Math.Max(3, (int)Math.Round(4 * dpiScale));
+            Rectangle tr = new Rectangle(down.Right + gap, 0, Math.Max(0, up.Left - down.Right - gap * 2), Height - 1);
             using (StringFormat sf = new StringFormat())
             using (SolidBrush tb = new SolidBrush(P.Ink))
             {
@@ -2449,7 +2795,7 @@ namespace Firestone2Green
         private void DrawStep(Graphics g, Rectangle r, bool up, bool hover, bool press)
         {
             Color fill = P.SurfaceSoft;
-            using (GraphicsPath path = D.Round(r, 8))
+            using (GraphicsPath path = D.Round(r, Math.Max(4, (int)Math.Round(8 * dpiScale))))
             using (SolidBrush b = new SolidBrush(fill))
             using (Pen p = new Pen(P.Hairline))
             {
@@ -2539,7 +2885,9 @@ namespace Firestone2Green
         public override Size GetPreferredSize(Size proposedSize)
         {
             Size s = TextRenderer.MeasureText(Text, Font);
-            return new Size(s.Width + Padding.Left + Padding.Right + 4, Math.Max(24, s.Height + Padding.Top + Padding.Bottom));
+            int extra = Math.Max(4, Padding.Left / 3);
+            return new Size(s.Width + Padding.Left + Padding.Right + extra,
+                Math.Max(MinimumSize.Height, s.Height + Padding.Top + Padding.Bottom));
         }
         protected override void OnPaint(PaintEventArgs e)
         {
