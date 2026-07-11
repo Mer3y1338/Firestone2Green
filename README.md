@@ -206,3 +206,6 @@ NetworkMode = AuthOnlyOnline
 
 ## 友链
 【感谢Linux.do社区及GitHub社区各位开发者对项目的支持与贡献】
+
+<img width="1380" height="802" alt="image" src="https://github.com/user-attachments/assets/6681aabd-9ca1-4b39-9934-37e2e82f4e19" />
+
