@@ -8,6 +8,7 @@ $repo = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $project = Join-Path $repo 'src\Firestone2Green.Wpf\Firestone2Green.Wpf.csproj'
 $bootstrapperSource = Join-Path $repo 'src\Firestone2Green.Bootstrapper\Program.cs'
 $icon = Join-Path $repo 'assets\app.ico'
+$bootstrapperManifest = Join-Path $repo 'src\Firestone2Green.Bootstrapper\app.manifest'
 $dotnet = 'C:\Users\15206\.dotnet\dotnet.exe'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $corePublish = Join-Path $repo 'tmp\wpf-framework-dependent'
@@ -17,6 +18,7 @@ $allowedRoot = [System.IO.Path]::GetFullPath((Join-Path $repo 'tmp')) + [System.
 
 if (-not (Test-Path -LiteralPath $dotnet)) { throw "找不到 .NET SDK: $dotnet" }
 if (-not (Test-Path -LiteralPath $csc)) { throw "找不到 .NET Framework C# 编译器: $csc" }
+if (-not (Test-Path -LiteralPath $bootstrapperManifest)) { throw "找不到启动器清单: $bootstrapperManifest" }
 if (-not $output.StartsWith($allowedRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw "输出目录必须位于 tmp 下: $output" }
 
 foreach ($dir in @($corePublish, $output)) {
@@ -45,6 +47,7 @@ $cscArgs = @(
     '/optimize+',
     "/out:$finalExe",
     "/win32icon:$icon",
+    "/win32manifest:$bootstrapperManifest",
     '/reference:System.dll',
     '/reference:System.Drawing.dll',
     '/reference:System.Windows.Forms.dll',
