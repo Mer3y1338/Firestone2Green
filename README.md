@@ -3,8 +3,8 @@
 <div align="center">
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)
-![UI](https://img.shields.io/badge/UI-WinForms-7c3aed?style=flat-square)
-![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET-16a34a?style=flat-square)
+![UI](https://img.shields.io/badge/UI-WPF-7c3aed?style=flat-square)
+![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET%2010-16a34a?style=flat-square)
 [![Release](https://img.shields.io/github/v/release/Mer3y1338/Firestone2Green?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Mer3y1338/Firestone2Green/total?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)](LICENSE)
@@ -22,8 +22,8 @@
 
 ## 功能特性
 
-- **一键处理**：提供 WinForms 图形界面，常用功能可直接点击执行。
-- **单文件分发**：EXE 内置 `scripts/Firestone2Green.ps1` 与默认头像资源。
+- **一键处理**：提供 WPF 图形界面，常用功能可直接点击执行。
+- **单文件分发**：最终下载物是一个约 1 MiB 的 EXE；WPF 主程序、PowerShell 脚本与默认头像资源都嵌入其中。
 - **路径自适应**：支持自动搜索或手动选择 Overwolf 根目录；正确目录必须直接包含 `OverwolfLauncher.exe` 或 `Overwolf.exe`，不再依赖固定盘符或固定安装目录。
 - **本地授权**：完成授权状态修复后，恢复 Firestone / Overwolf 正常网络能力。
 - **头像修复**：仅替换 Firestone 左下角登录 / 账户头像。
@@ -31,18 +31,19 @@
 - **静默持续修复**：支持安装计划任务，在系统重启或 Firestone 更新后自动补授权；安装本身不会主动启动 Firestone。
 - **快捷方式启动**：可创建桌面快捷方式 `Firestone2Green 启动 Firestone`，用于日常无弹窗启动。
 - **自动更新检查**：启动后自动对比 GitHub Releases，右上角提示是否已是最新版；网络不可用时会提示更新检查失败。
+- **运行环境检测**：启动器会先检测 .NET 10 Desktop Runtime；缺失时只显示引导页面，并提供按钮直达微软官方下载页面，安装后可重新检测。
 - **日志错误解释**：运行失败时保留原始异常、类型、代码行和命令，并为常见错误自动追加简单原因和处理建议。
 - **首次启动免责声明**：首次打开会提醒“本项目仅用于交流学习，有能力者请多多支持正版”。
 - **响应式高 DPI 界面**：针对 100%～200% 缩放、窄窗口和小屏工作区重新排版；小窗口会精简次要文案并保持底栏紧凑固定，GitHub 入口位于左侧、版本号位于最右侧。
 - **数据稳定**：启动前恢复 AuthOnlyOnline 网络，避免套牌 / 环境数据在启动断网窗口里加载失败。
 
 > [!NOTE]
-> v0.2.4 已完成 100% 实际窗口几何测试，并通过 125%～200% DPI 布局模拟审计；左侧功能顺序固定为 **一键处理 → 持续化与打包 → 精细控制**。
+> v0.2.5 已完成 100% 实际窗口几何测试，并通过 125%～200% DPI 布局模拟审计；左侧功能顺序固定为 **一键处理 → 持续化与打包 → 精细控制**。
 
 ## 快速开始
 
 1. 从 GitHub Releases 下载 `Firestone2Green_v???.exe`。
-2. 右键 `Firestone2Green_v???.exe`，选择 **以管理员身份运行**。
+2. 右键 `Firestone2Green_v???.exe`，选择 **以管理员身份运行**。首次启动会自动检测 .NET 10 Desktop Runtime；如果缺失，按提示点击 **前往官方下载**，安装后点击 **重新检测**。
 3. 在 **路径设置** 区域确认路径；如果没有自动识别，点击 **自动搜索** 或 **选择路径**，选择 Overwolf 根目录（打开后能直接看到 `OverwolfLauncher.exe` 或 `Overwolf.exe` 的那一层目录）。选到子目录或上级目录时程序会弹窗提示正确位置。若用户只安装了 Overwolf（狼头）但还没安装 Firestone，请先在 Overwolf 中安装并正常打开一次 Firestone。
 4. 点击 **一键重启并授权**。
 5. 等待日志显示退出码 `0`。

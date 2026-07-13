@@ -2568,10 +2568,6 @@ function Invoke-PrepareLaunchAuth {
   Set-State $State 'integrityAfterRestore' $integrity
   Set-State $State 'removedLeftovers' (Remove-KnownPatchLeftovers -VersionRoot $versionRoot)
 
-  if (-not $SkipCacheQuarantine) {
-    Set-State $State 'quarantinedCaches' (Quarantine-FirestoneCaches -AppId $AppId -BackupRoot $backupRoot)
-  }
-
   # 关键修复：启动 Firestone 前就切到 AuthOnlyOnline。
   # 旧流程会先全断网启动，再授权后恢复网络；套牌/环境数据有时会在断网窗口初始化失败。
   Set-AuthOnlyOnlineNetwork -State $State
@@ -2585,7 +2581,7 @@ function Invoke-LaunchAuth {
   try {
     Invoke-PrepareLaunchAuth -State $State
     $prepared = $true
-    Start-FirestoneWithAutomation -State $State
+    Start-FirestoneWithAutomation -State $State -SkipMonitor
   } catch {
     if ($prepared) {
       try {

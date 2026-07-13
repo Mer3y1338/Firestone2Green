@@ -3,8 +3,8 @@
 <div align="center">
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)
-![UI](https://img.shields.io/badge/UI-WinForms-7c3aed?style=flat-square)
-![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET-16a34a?style=flat-square)
+![UI](https://img.shields.io/badge/UI-WPF-7c3aed?style=flat-square)
+![Build](https://img.shields.io/badge/build-PowerShell%20%2B%20.NET%2010-16a34a?style=flat-square)
 [![Release](https://img.shields.io/github/v/release/Mer3y1338/Firestone2Green?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Mer3y1338/Firestone2Green/total?style=flat-square)](https://github.com/Mer3y1338/Firestone2Green/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)](LICENSE)
@@ -20,12 +20,12 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 
 ## Keywords
 
-`Firestone` · `Overwolf` · `Hearthstone Tracker` · `Windows` · `PowerShell` · `WinForms` · `local authorization repair` · `avatar repair` · `network restore` · `scheduled task` · `single-file EXE`
+`Firestone` · `Overwolf` · `Hearthstone Tracker` · `Windows` · `PowerShell` · `WPF` · `local authorization repair` · `avatar repair` · `network restore` · `scheduled task` · `single-file EXE`
 
 ## Features
 
-- **One-click workflow**: Provides a WinForms GUI for common operations.
-- **Single-file distribution**: The EXE embeds `scripts/Firestone2Green.ps1` and the default avatar resource.
+- **One-click workflow**: Provides a WPF GUI for common operations.
+- **Single-file distribution**: The final download is one approximately 1 MiB EXE; it embeds the WPF main program, `scripts/Firestone2Green.ps1`, and the default avatar resource.
 - **Adaptive path detection**: Automatically searches for or lets the user select the Overwolf root folder. The correct folder must directly contain `OverwolfLauncher.exe` or `Overwolf.exe`, so it no longer depends on a fixed drive letter or install directory.
 - **Local authorization**: Restores the local authorization state and then keeps normal Firestone / Overwolf network functionality available.
 - **Avatar repair**: Replaces only the Firestone bottom-left login / account avatar.
@@ -33,18 +33,19 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 - **Silent persistent repair**: Can install scheduled tasks to automatically refresh authorization after Windows restarts or Firestone updates. Installing it does not launch Firestone by itself.
 - **Dedicated launch shortcut**: Creates a desktop shortcut named `Firestone2Green 启动 Firestone` for daily silent startup.
 - **Automatic update check**: Checks GitHub Releases on startup and shows the result in the top-right status area; network failures show an update-check warning.
+- **Runtime preflight**: A lightweight launcher checks for the .NET 10 Desktop Runtime before opening the WPF UI; if it is missing, a button opens Microsoft's official download page and another button retries the check.
 - **Preserved root-cause errors**: Failed runs now keep the original exception, type, source line, and command, while still adding short explanations and suggested fixes for common errors.
 - **First-run disclaimer**: Shows a short learning-only / support-official disclaimer on first launch.
-- **Responsive high-DPI interface**: Reflows the WinForms layout for 100%–200% scaling, narrow windows, and small working areas. Compact layouts hide secondary copy, keep the footer slim and fixed, place GitHub on the left, and keep the version at the far right.
+- **Responsive high-DPI interface**: Reflows the WPF layout for 100%–200% scaling, narrow windows, and small working areas. Compact layouts hide secondary copy, keep the footer slim and fixed, place GitHub on the left, and keep the version at the far right.
 - **Stable data loading**: Switches to `AuthOnlyOnline` before starting Firestone, so deck data, meta data, and tracker data can load normally.
 
 > [!NOTE]
-> v0.2.4 passed real 100% window-geometry checks and simulated 125%–200% DPI layout audits. The left-side priority remains **one-click repair → persistence/package → fine control**.
+> v0.2.5 passed real 100% window-geometry checks and simulated 125%–200% DPI layout audits. The left-side priority remains **one-click repair → persistence/package → fine control**.
 
 ## Quick Start
 
 1. Download `Firestone2Green_vVERSION.exe` from GitHub Releases.
-2. Right-click `Firestone2Green_vVERSION.exe` and choose **Run as administrator**.
+2. Right-click `Firestone2Green_vVERSION.exe` and choose **Run as administrator**. On first launch, the program checks for the .NET 10 Desktop Runtime; if it is missing, click **Official download**, install the Windows x64 Desktop Runtime, then click **Retry detection**.
 3. Confirm the **路径设置** field. If it is not detected automatically, click **自动搜索** or **选择路径** and choose the Overwolf root folder — the folder where `OverwolfLauncher.exe` or `Overwolf.exe` is directly visible. If a child or parent folder is selected, the app shows the correct location. If the user has only installed Overwolf but not Firestone yet, install and open Firestone once from Overwolf first.
 4. Click **一键重启并授权**.
 5. Wait until the log shows exit code `0`.

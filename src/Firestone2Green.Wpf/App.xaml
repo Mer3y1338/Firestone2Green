@@ -1,0 +1,155 @@
+﻿<Application x:Class="Firestone2Green.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <SolidColorBrush x:Key="PrimaryBrush" Color="#CC785C"/>
+        <SolidColorBrush x:Key="PrimaryActiveBrush" Color="#A9583E"/>
+        <SolidColorBrush x:Key="InkBrush" Color="#141413"/>
+        <SolidColorBrush x:Key="MutedBrush" Color="#6C6A64"/>
+        <SolidColorBrush x:Key="HairlineBrush" Color="#E6DFD8"/>
+        <SolidColorBrush x:Key="CanvasBrush" Color="#FAF9F5"/>
+        <SolidColorBrush x:Key="SurfaceSoftBrush" Color="#F5F0E8"/>
+        <SolidColorBrush x:Key="SurfaceCardBrush" Color="#EFE9DE"/>
+        <SolidColorBrush x:Key="SurfaceDarkBrush" Color="#181715"/>
+        <SolidColorBrush x:Key="SurfaceDarkElevatedBrush" Color="#252320"/>
+        <SolidColorBrush x:Key="OnDarkBrush" Color="#FAF9F5"/>
+        <SolidColorBrush x:Key="OnDarkSoftBrush" Color="#A09D96"/>
+
+        <Style x:Key="DarkLogScrollBarStyle" TargetType="{x:Type ScrollBar}">
+            <Setter Property="Width" Value="9"/>
+            <Setter Property="MinWidth" Value="9"/>
+            <Setter Property="Margin" Value="7,1,0,1"/>
+            <Setter Property="Background" Value="{StaticResource SurfaceDarkElevatedBrush}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ScrollBar}">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="5">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}" Opacity="0" Focusable="False"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb MinHeight="24" Background="{StaticResource OnDarkSoftBrush}">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="{x:Type Thumb}">
+                                                <Border Background="{TemplateBinding Background}" CornerRadius="5" Opacity="0.72"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}" Opacity="0" Focusable="False"/>
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource SurfaceCardBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource HairlineBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="16"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+        </Style>
+
+        <Style x:Key="BaseButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="MinWidth" Value="96"/>
+            <Setter Property="Margin" Value="6,2"/>
+            <Setter Property="Padding" Value="10,0"/>
+            <Setter Property="FontFamily" Value="Microsoft YaHei UI"/>
+            <Setter Property="FontSize" Value="12.27"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+            <Setter Property="Background" Value="{StaticResource CanvasBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource HairlineBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Margin="2,2,2,3">
+                            <Border x:Name="ButtonBorder" Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                  Margin="{TemplateBinding Padding}"/>
+                            </Border>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="RenderTransform">
+                                    <Setter.Value><TranslateTransform Y="1"/></Setter.Value>
+                                </Setter>
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{StaticResource SurfaceSoftBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{StaticResource HairlineBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+                                <Setter Property="Opacity" Value="0.85"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
+            <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Style.Triggers>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="{StaticResource PrimaryActiveBrush}"/>
+                    <Setter Property="BorderBrush" Value="{StaticResource PrimaryActiveBrush}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="SecondaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}"/>
+
+        <Style x:Key="FooterButtonStyle" TargetType="Button" BasedOn="{StaticResource BaseButtonStyle}">
+            <Setter Property="MinWidth" Value="44"/>
+            <Setter Property="Height" Value="40"/>
+            <Setter Property="Margin" Value="4"/>
+            <Setter Property="FontSize" Value="10.67"/>
+            <Setter Property="Background" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}"/>
+        </Style>
+
+        <Style x:Key="ChromeButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource CanvasBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ChromeSurface" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ChromeSurface" Property="Background" Value="{StaticResource SurfaceCardBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Application.Resources>
+</Application>
