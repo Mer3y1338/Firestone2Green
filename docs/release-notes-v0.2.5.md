@@ -69,3 +69,7 @@
 - Firestone2Green 完全免费，仅通过项目 GitHub 发布。
 - 如果 hosts 被安全软件保护，请保持管理员运行，并在安全软件中允许 Firestone2Green 与 PowerShell 修改 hosts；程序会在日志中给出可执行的处理建议。
 - 本版本不修改 `D:\Code\DESIGN-claude.md` 的内容。
+## 发布后修复
+
+- 修复启动器对 .NET 10 Desktop Runtime 的检测条件：改为检查 .NET Desktop Runtime 官方框架清单文件，避免运行库已安装但仍误报缺失。
+- 已重新验证 Windows x64 .NET 10.0.5 与用户目录 .NET 10.0.9 两种安装位置。

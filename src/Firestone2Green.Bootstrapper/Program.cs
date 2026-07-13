@@ -75,9 +75,11 @@ internal static class Program
                 foreach (string directory in Directory.GetDirectories(root))
                 {
                     Version version;
+                    // .NET Desktop Runtime folders expose the framework manifest files;
+                    // Microsoft.WindowsDesktop.App.dll is not present in current .NET 10 installs.
                     if (Version.TryParse(Path.GetFileName(directory), out version) &&
                         version.Major == 10 &&
-                        File.Exists(Path.Combine(directory, "Microsoft.WindowsDesktop.App.dll")))
+                        File.Exists(Path.Combine(directory, "Microsoft.WindowsDesktop.App.runtimeconfig.json")))
                         return true;
                 }
             }
