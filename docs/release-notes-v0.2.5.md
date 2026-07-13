@@ -37,6 +37,7 @@
 - 轻量启动器会在进入 WPF 主界面前检测 Windows x64 的 .NET 10 Desktop Runtime。
 - 检测不到时不会让用户面对系统原始报错，而是显示说明、**前往官方下载**按钮和**重新检测**按钮。
 - 官方下载页面：`https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0`；请选择 Windows x64 的 **Desktop Runtime**，不要下载 SDK 或 ASP.NET Core Runtime。
+
 ## 验证结果
 
 - WPF Release 构建通过，目标框架为 `net10.0-windows`。
@@ -54,6 +55,14 @@
 3. 再点击 **安装持续修复**。
 
 这样可以确保计划任务、桌面快捷方式和内嵌脚本均更新为当前版本。
+
+## 发布文件
+
+- `Firestone2Green_v0.2.5.exe`：推荐普通用户下载。最终文件约 `1.04 MiB`，下载物只有一个 EXE；启动时会自动检测 .NET 10 Desktop Runtime。
+- `Firestone2Green_v0.2.5_dist.zip`：包含单 EXE、使用教程、当前更新日志、中英文 README 与许可证，方便保存和转发完整说明。
+- `Source code (zip)` / `Source code (tar.gz)`：GitHub 根据 `0.2.5` 标签自动生成的完整源码归档。
+
+下载后右键以管理员身份运行。如果提示缺少 .NET 10 Desktop Runtime，点击 **前往官方下载**，安装 Windows x64 Desktop Runtime 后返回程序点击 **重新检测**。
 
 ## 注意事项
 
