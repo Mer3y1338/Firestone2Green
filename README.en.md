@@ -219,3 +219,5 @@ See [`docs/使用教程.md`](docs/%E4%BD%BF%E7%94%A8%E6%95%99%E7%A8%8B.md).
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+<img width="1387" height="793" alt="image" src="https://github.com/user-attachments/assets/5c2bb2af-1fa4-4e77-8605-51ca972bf617" />
