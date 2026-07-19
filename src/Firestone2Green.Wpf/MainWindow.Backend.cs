@@ -17,10 +17,9 @@ public partial class MainWindow
     private const string ScriptResourceName = "Firestone2Green.ps1";
     private const string AvatarResourceName = "Firestone2GreenAvatar.jpg";
     private const string ConfigFileName = "config.ini";
-    private const string DisclaimerFileName = "disclaimer.ok";
     private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
     private const string OverwolfMainFile = "Overwolf.exe";
-    private const string AppVersion = "0.2.5";
+    private const string AppVersion = "0.2.6";
     private const string OfficialRepoUrl = "https://github.com/Mer3y1338/Firestone2Green";
     private const string OfficialGroupJoinUrl = "https://qm.qq.com/q/ZP3oGLAlQ4";
     private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
@@ -31,7 +30,6 @@ public partial class MainWindow
     private string reportDir = string.Empty;
     private string avatarPath = string.Empty;
     private string configPath = string.Empty;
-    private string disclaimerPath = string.Empty;
     private string overwolfRoot = string.Empty;
     private string latestReleaseUrl = LatestReleasePageUrl;
     private bool running;
@@ -50,7 +48,6 @@ public partial class MainWindow
         avatarPath = ResolveAvatarPath(Path.Combine(baseDir, "assets", "avatar.jpg"));
         var local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Firestone2Green");
         configPath = Path.Combine(local, ConfigFileName);
-        disclaimerPath = Path.Combine(local, DisclaimerFileName);
         overwolfRoot = LoadConfiguredOverwolfRoot();
         if (string.IsNullOrEmpty(overwolfRoot))
             overwolfRoot = FindOverwolfRoot(deep: false);
@@ -817,17 +814,6 @@ public partial class MainWindow
         File.WriteAllBytes(targetPath, bytes);
     }
 
-    private void ShowDisclaimerIfFirstRun()
-    {
-        try
-        {
-            if (File.Exists(disclaimerPath)) return;
-            MessageBox.Show(this, "本项目仅用于交流学习，有能力者请多多支持正版", "使用提醒", MessageBoxButton.OK, MessageBoxImage.Information);
-            Directory.CreateDirectory(Path.GetDirectoryName(disclaimerPath)!);
-            File.WriteAllText(disclaimerPath, "shown=" + DateTime.Now.ToString("O") + Environment.NewLine, Encoding.UTF8);
-        }
-        catch { }
-    }
 
     private void BeginCheckForUpdates()
     {

@@ -1,0 +1,69 @@
+<Window x:Class="Firestone2Green.StartupGateWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Firestone2Green · 首次启动确认"
+        Width="520"
+        MinWidth="440"
+        MaxWidth="680"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False"
+        Background="{StaticResource CanvasBrush}"
+        Foreground="{StaticResource InkBrush}"
+        FontFamily="Microsoft YaHei UI"
+        Loaded="Window_Loaded">
+    <Border Margin="16" Padding="28,24,28,22"
+            Background="{StaticResource SurfaceCardBrush}"
+            BorderBrush="{StaticResource HairlineBrush}"
+            BorderThickness="1"
+            CornerRadius="16">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="首次启动确认" FontSize="23" FontWeight="Bold"/>
+            <TextBlock Grid.Row="1" Margin="0,10,0,0"
+                       Text="本程序完全免费开源，如果你是付费购买，那么请退款或者辱骂倒卖者。"
+                       TextWrapping="Wrap" LineHeight="24" FontSize="14"/>
+            <TextBlock Grid.Row="2" Margin="0,14,0,0"
+                       Text="请输入下面的确认文字后才能启动程序："
+                       Foreground="{StaticResource MutedBrush}" FontSize="12.5"/>
+
+            <Border Grid.Row="3" Margin="0,8,0,0" Padding="14,12"
+                    Background="{StaticResource SurfaceSoftBrush}"
+                    BorderBrush="{StaticResource HairlineBrush}"
+                    BorderThickness="1" CornerRadius="10">
+                <StackPanel>
+                    <TextBlock Text="请输入“免费软件 拒绝付费”启动程序" FontSize="13" FontWeight="Bold"/>
+                    <Grid Margin="0,10,0,0" Height="38">
+                        <TextBox x:Name="ConfirmationTextBox" Height="38"
+                                 Padding="10,7,72,7" FontSize="14"
+                                 VerticalContentAlignment="Center"
+                                 ToolTip="免费软件 拒绝付费"
+                                 TextChanged="ConfirmationTextBox_TextChanged"
+                                 KeyDown="ConfirmationTextBox_KeyDown"/>
+                        <Button Content="复制" Style="{StaticResource BaseButtonStyle}"
+                                Width="58" MinWidth="58" Height="30" Margin="0,4,4,4"
+                                Padding="4,0" HorizontalAlignment="Right" Panel.ZIndex="1"
+                                Click="CopyPhrase_Click"/>
+                    </Grid>
+                    <TextBlock x:Name="ValidationText" Margin="2,7,2,0"
+                               Text="请输入完整文字后继续。"
+                               Foreground="{StaticResource MutedBrush}" FontSize="11.5"/>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Row="4" Margin="0,18,0,0" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="退出程序" Style="{StaticResource BaseButtonStyle}" Click="Exit_Click" IsCancel="True"/>
+                <Button x:Name="StartButton" Content="启动程序" Style="{StaticResource PrimaryButtonStyle}"
+                        IsDefault="True" IsEnabled="False" Click="Start_Click"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>

@@ -10,9 +10,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Firestone2Green")]
 [assembly: AssemblyDescription("Firestone2Green WPF .NET 10 bootstrapper")]
 [assembly: AssemblyCompany("Mer3y1338")]
-[assembly: AssemblyVersion("0.2.5.0")]
-[assembly: AssemblyFileVersion("0.2.5.0")]
-[assembly: AssemblyInformationalVersion("0.2.5")]
+[assembly: AssemblyVersion("0.2.6.0")]
+[assembly: AssemblyFileVersion("0.2.6.0")]
+[assembly: AssemblyInformationalVersion("0.2.6")]
 
 namespace Firestone2Green.Bootstrapper
 {
@@ -22,7 +22,7 @@ internal static class Program
     internal const string RuntimeDownloadUrl = "https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0";
     private const string PayloadResourceSuffix = "Firestone2Green.Wpf.exe";
     private const string PayloadFileName = "Firestone2Green.Wpf.exe";
-    private const string AppVersion = "0.2.5";
+    private const string AppVersion = "0.2.6";
 
     [STAThread]
     private static void Main()

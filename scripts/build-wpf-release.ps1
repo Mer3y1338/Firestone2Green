@@ -39,7 +39,7 @@ if ($LASTEXITCODE -ne 0) { throw "WPF 主程序发布失败: $LASTEXITCODE" }
 $payload = Join-Path $corePublish 'Firestone2Green.Wpf.exe'
 if (-not (Test-Path -LiteralPath $payload)) { throw "找不到 WPF 单文件主程序: $payload" }
 
-$finalExe = Join-Path $output 'Firestone2Green_v0.2.5.exe'
+$finalExe = Join-Path $output 'Firestone2Green_v0.2.6.exe'
 $cscArgs = @(
     '/nologo',
     '/target:winexe',
@@ -58,7 +58,7 @@ $cscArgs = @(
 if ($LASTEXITCODE -ne 0) { throw "启动器编译失败: $LASTEXITCODE" }
 
 $files = @(Get-ChildItem -LiteralPath $output -File)
-if ($files.Count -ne 1 -or $files[0].Name -ne 'Firestone2Green_v0.2.5.exe') {
+if ($files.Count -ne 1 -or $files[0].Name -ne 'Firestone2Green_v0.2.6.exe') {
     throw "最终输出不是单 EXE: $($files.Name -join ', ')"
 }
 

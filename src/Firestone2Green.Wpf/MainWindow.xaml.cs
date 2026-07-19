@@ -36,7 +36,6 @@ public partial class MainWindow : Window
         UpdateMaximizedBounds();
         ApplyResponsiveLayout(force: true);
         LoadEmbeddedAvatar();
-        ShowDisclaimerIfFirstRun();
         BeginCheckForUpdates();
     }
 

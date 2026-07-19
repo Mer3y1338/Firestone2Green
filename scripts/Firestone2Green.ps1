@@ -1716,17 +1716,101 @@ function Invoke-Monitor {
   Set-State $State 'monitorEvents' $eventArray
 }
 
+function Invoke-LocalAutomationJsonPost {
+  param(
+    [Parameter(Mandatory = $true)][uri]$Uri,
+    [Parameter(Mandatory = $true)][string]$Body,
+    [string]$HostHeader = ''
+  )
+
+  if ($Uri.Scheme -ne 'http' -or $Uri.Host -notin @('localhost', '127.0.0.1', '::1')) {
+    throw "拒绝访问非本机 automation 地址：$Uri"
+  }
+  if ($HostHeader -and $HostHeader -ne "localhost:$($Uri.Port)") {
+    throw "拒绝无效的 automation Host 头：$HostHeader"
+  }
+
+  $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Uri)
+  $request.Method = 'POST'
+  $request.Proxy = $null
+  $request.ContentType = 'application/json; charset=utf-8'
+  $request.Accept = 'application/json'
+  $request.Timeout = 20000
+  $request.ReadWriteTimeout = 20000
+  $request.KeepAlive = $false
+  if ($HostHeader) { $request.Host = $HostHeader }
+
+  $payload = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Body)
+  $request.ContentLength = $payload.Length
+  $response = $null
+  try {
+    $requestStream = $request.GetRequestStream()
+    try {
+      $requestStream.Write($payload, 0, $payload.Length)
+    } finally {
+      if ($requestStream) { $requestStream.Dispose() }
+    }
+
+    $response = [System.Net.HttpWebResponse]$request.GetResponse()
+    $reader = New-Object System.IO.StreamReader($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
+    try {
+      $responseText = $reader.ReadToEnd()
+    } finally {
+      $reader.Dispose()
+    }
+  } catch [System.Net.WebException] {
+    $webResponse = [System.Net.HttpWebResponse]$_.Exception.Response
+    $statusText = if ($webResponse) { "HTTP $([int]$webResponse.StatusCode) $($webResponse.StatusDescription)" } else { $_.Exception.Status.ToString() }
+    $errorText = ''
+    if ($webResponse) {
+      try {
+        $errorReader = New-Object System.IO.StreamReader($webResponse.GetResponseStream(), [System.Text.Encoding]::UTF8)
+        try { $errorText = $errorReader.ReadToEnd() } finally { $errorReader.Dispose() }
+      } catch {}
+      $webResponse.Dispose()
+    }
+    $errorText = ([string]$errorText -replace '\s+', ' ').Trim()
+    if ($errorText -match '(?i)invalid hostname') {
+      throw "本机 automation 请求失败：$statusText；HTTP.sys 拒绝了 Host 名称。"
+    }
+    throw "本机 automation 请求失败：$statusText；$($_.Exception.Message)"
+  } finally {
+    if ($response) { $response.Dispose() }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($responseText)) {
+    throw '本机 automation 返回了空响应。'
+  }
+  try {
+    return $responseText | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    throw "本机 automation 返回了无效 JSON：$($_.Exception.Message)"
+  }
+}
+
 function Invoke-AutomationCommand {
   param(
     [int]$Port,
     [string]$CommandId,
     [hashtable]$CommandArgs
   )
-  $uri = "http://localhost:$Port/"
-  $body = @{ id = $CommandId; args = $CommandArgs } | ConvertTo-Json -Depth 12 -Compress
-  return Invoke-RestMethod -Method Post -Uri $uri -Body $body -ContentType 'application/json' -TimeoutSec 20
-}
+  if ($Port -lt 1 -or $Port -gt 65535) { throw "无效的 automation 端口：$Port" }
 
+  $body = @{ id = $CommandId; args = $CommandArgs } | ConvertTo-Json -Depth 12 -Compress
+  $targets = @(
+    [pscustomobject]@{ Name = 'localhost'; Uri = "http://localhost:$Port/"; HostHeader = '' },
+    [pscustomobject]@{ Name = '127.0.0.1 + Host: localhost'; Uri = "http://127.0.0.1:$Port/"; HostHeader = "localhost:$Port" }
+  )
+  $errors = @()
+  foreach ($target in $targets) {
+    try {
+      return Invoke-LocalAutomationJsonPost -Uri ([uri]$target.Uri) -Body $body -HostHeader $target.HostHeader
+    } catch {
+      $errors += "$($target.Name)：$($_.Exception.Message)"
+    }
+  }
+  throw "automation 接口不可用（已绕过系统代理并尝试本机 Host 兼容）：$($errors -join '；')"
+}
 function Wait-AutomationServer {
   param([int]$Port, [int]$TimeoutSeconds = 30)
   Write-Step "等待 Overwolf 本地 automation 接口：http://localhost:$Port/"
@@ -2351,14 +2435,9 @@ function Test-AutomationServerReady {
 
 function Get-AutomationPortsToTry {
   param([int]$RequestedPort)
-  $ports = New-Object System.Collections.Generic.List[int]
   $primary = if ($RequestedPort -gt 0) { [int]$RequestedPort } else { 18765 }
-  foreach ($p in @($primary, 54284)) {
-    if ($p -gt 0 -and -not $ports.Contains([int]$p)) { $ports.Add([int]$p) }
-  }
-  return @($ports)
+  return @($primary)
 }
-
 function Wait-AnyAutomationServerReady {
   param(
     [int[]]$Ports,
@@ -2381,80 +2460,28 @@ function Start-FirestoneLaunchWithFallback {
     [int]$Port
   )
 
-  $attempts = @()
-  $portsToTry = @(Get-AutomationPortsToTry -RequestedPort $Port)
-  $primaryPort = [int]$portsToTry[0]
-  $compatPort = if ($portsToTry.Count -gt 1) { [int]$portsToTry[1] } else { $null }
-  $candidates = @(
-    [pscustomobject]@{
-      Name = "优先旧式启动：-launchapp -from-desktop + automation $primaryPort"
-      Port = $primaryPort
-      PreArgs = @()
-      Args = @('-launchapp', $AppId, '-from-desktop', '--automation', "$primaryPort", '--enable-automation')
-      TimeoutSeconds = 30
-    },
-    [pscustomobject]@{
-      Name = "新版启动：--launchapp --origin desktop + automation $primaryPort"
-      Port = $primaryPort
-      PreArgs = @()
-      Args = @('--launchapp', $AppId, '--origin', 'desktop', '--automation', "$primaryPort", '--enable-automation')
-      TimeoutSeconds = 30
-    },
-    [pscustomobject]@{
-      Name = "混合启动：-launchapp --origin desktop + automation $primaryPort"
-      Port = $primaryPort
-      PreArgs = @()
-      Args = @('-launchapp', $AppId, '--origin', 'desktop', '--automation', "$primaryPort", '--enable-automation')
-      TimeoutSeconds = 20
-    }
-  )
-  if ($compatPort) {
-    $candidates += @(
-      [pscustomobject]@{
-        Name = "后置兼容：旧式启动 + --automation=$primaryPort"
-        Port = $primaryPort
-        PreArgs = @()
-        Args = @('-launchapp', $AppId, '-from-desktop', "--automation=$primaryPort", '--enable-automation')
-        TimeoutSeconds = 20
-      },
-      [pscustomobject]@{
-        Name = "后置兼容：官方两段式默认端口 $compatPort"
-        Port = $compatPort
-        PreArgs = @('--enable-automation')
-        Args = @('-launchapp', $AppId, '-from-desktop')
-        TimeoutSeconds = 20
-      },
-      [pscustomobject]@{
-        Name = "后置兼容：新版两段式默认端口 $compatPort"
-        Port = $compatPort
-        PreArgs = @('--enable-automation')
-        Args = @('--launchapp', $AppId, '--origin', 'desktop')
-        TimeoutSeconds = 20
-      },
-      [pscustomobject]@{
-        Name = "最后兜底：旧式启动 + automation $compatPort"
-        Port = $compatPort
-        PreArgs = @()
-        Args = @('-launchapp', $AppId, '-from-desktop', '--automation', "$compatPort", '--enable-automation')
-        TimeoutSeconds = 20
-      }
-    )
+  if (-not $Launchers -or $Launchers.Count -eq 0) {
+    throw '未找到可用的 Overwolf 启动程序。'
   }
 
-  $total = $candidates.Count * $Launchers.Count
+  $attempts = @()
+  $primaryPort = [int](@(Get-AutomationPortsToTry -RequestedPort $Port)[0])
+  $standardArgs = @('-launchapp', $AppId, '-from-desktop', '--automation', "$primaryPort", '--enable-automation')
+  $total = $Launchers.Count
   $attemptIndex = 0
+
   foreach ($launcherPath in $Launchers) {
-  for ($i = 0; $i -lt $candidates.Count; $i++) {
     $attemptIndex++
-    $candidate = $candidates[$i]
-    Write-Step ("启动方式 {0}/{1}：{2} [{3}]" -f $attemptIndex, $total, $candidate.Name, (Split-Path -Leaf $launcherPath))
+    $launcherName = Split-Path -Leaf $launcherPath
+    $candidateName = "标准启动：-launchapp -from-desktop + automation $primaryPort"
+    Write-Step ("启动方式 {0}/{1}：{2} [{3}]" -f $attemptIndex, $total, $candidateName, $launcherName)
     $record = [ordered]@{
       index = $attemptIndex
-      name = $candidate.Name
+      name = $candidateName
       launcher = $launcherPath
-      ports = ([string]$candidate.Port)
-      preArgs = ($candidate.PreArgs -join ' ')
-      args = ($candidate.Args -join ' ')
+      ports = ([string]$primaryPort)
+      preArgs = ''
+      args = ($standardArgs -join ' ')
       startedAt = (Get-Date).ToString('o')
       automationReady = $false
       automationPort = $null
@@ -2462,13 +2489,8 @@ function Start-FirestoneLaunchWithFallback {
     }
     $recordAdded = $false
     try {
-      if ($candidate.PreArgs -and $candidate.PreArgs.Count -gt 0) {
-        Write-Host "预启动 automation：$($candidate.PreArgs -join ' ')"
-        Start-Process -FilePath $launcherPath -ArgumentList $candidate.PreArgs
-        Start-Sleep -Seconds 3
-      }
-      Start-Process -FilePath $launcherPath -ArgumentList $candidate.Args
-      $readyPort = Wait-AnyAutomationServerReady -Ports @([int]$candidate.Port) -TimeoutSeconds ([int]$candidate.TimeoutSeconds)
+      Start-Process -FilePath $launcherPath -ArgumentList $standardArgs
+      $readyPort = Wait-AnyAutomationServerReady -Ports @($primaryPort) -TimeoutSeconds 30
       if ($readyPort) {
         $record['automationReady'] = $true
         $record['automationPort'] = $readyPort
@@ -2476,7 +2498,7 @@ function Start-FirestoneLaunchWithFallback {
         $attempts += [pscustomobject]$record
         $recordAdded = $true
         Set-State $State 'launchAttempts' $attempts
-        Set-State $State 'selectedLaunchMode' $candidate.Name
+        Set-State $State 'selectedLaunchMode' $candidateName
         Set-State $State 'selectedLauncher' $launcherPath
         Set-State $State 'effectiveAutomationPort' $readyPort
         Write-Host "automation 接口可用：localhost:$readyPort"
@@ -2485,11 +2507,11 @@ function Start-FirestoneLaunchWithFallback {
 
       $running = @(Get-FirestoneAppProcesses -AppId $AppId)
       $record['firestoneProcessCount'] = $running.Count
-      $record['error'] = "automation 接口未在 $($candidate.TimeoutSeconds) 秒内可用；当前尝试端口：$($candidate.Port)"
-      Write-Warning ("{0} 未打开 automation，准备切换下一种启动方式。" -f $candidate.Name)
+      $record['error'] = "automation 接口未在 30 秒内可用；端口：$primaryPort"
+      Write-Warning ("{0} 未打开 automation，准备切换下一个可用的 Overwolf 启动程序。" -f $launcherName)
     } catch {
       $record['error'] = $_.Exception.Message
-      Write-Warning ("{0} 启动失败：{1}" -f $candidate.Name, $_.Exception.Message)
+      Write-Warning ("{0} 启动失败：{1}" -f $launcherName, $_.Exception.Message)
     } finally {
       if (-not $record.Contains('completedAt')) { $record['completedAt'] = (Get-Date).ToString('o') }
       if (-not $recordAdded) {
@@ -2504,18 +2526,16 @@ function Start-FirestoneLaunchWithFallback {
       Start-Sleep -Seconds 2
     }
   }
-  }
 
-  Write-Warning '所有 automation 启动方式都失败，改用普通方式打开 Firestone，避免快捷方式看起来“无响应”。'
+  Write-Warning '标准 automation 启动失败，改用普通方式打开 Firestone，避免用户感觉软件无响应。'
   try {
     Start-Process -FilePath $Launchers[0] -ArgumentList @('-launchapp', $AppId, '-from-desktop')
   } catch {
     Write-Warning "普通启动也失败：$($_.Exception.Message)"
   }
   Set-State $State 'automationAvailable' $false
-  throw 'automation 接口不可用：已按优先级先尝试历史成功方案（18765 + 旧式启动），再尝试新版/混合参数，最后才尝试后置兼容端口与两段式启动。请先确认 Firestone 已在 Overwolf 中安装并能正常打开；升级后如已安装持续修复，请先“移除持续修复”再“安装持续修复”。'
+  throw "automation 接口不可用：已尝试标准启动方式（$primaryPort）和可用的 Overwolf 启动程序；未再使用未经验证的兼容参数。请确认 Firestone 能通过 ‘-launchapp $AppId -from-desktop’ 正常打开。"
 }
-
 function Start-FirestoneWithAutomation {
   param(
     [System.Collections.IDictionary]$State,

@@ -40,7 +40,7 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 - **Stable data loading**: Switches to `AuthOnlyOnline` before starting Firestone, so deck data, meta data, and tracker data can load normally.
 
 > [!NOTE]
-> v0.2.5 passed real 100% window-geometry checks and simulated 125%–200% DPI layout audits. The left-side priority remains **one-click repair → persistence/package → fine control**.
+> v0.2.6 passed real 100% window-geometry checks and simulated 125%–200% DPI layout audits. The left-side priority remains **one-click repair → persistence/package → fine control**.
 
 ## Quick Start
 
