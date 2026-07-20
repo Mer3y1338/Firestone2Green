@@ -211,7 +211,7 @@
                         <Button Grid.Column="0" Style="{StaticResource FooterButtonStyle}" Content="GitHub" Click="GitHubButton_Click"/>
                         <TextBlock x:Name="FooterGroup" Grid.Column="1" Text="官方群: 630855391" Foreground="{StaticResource OnDarkSoftBrush}" FontSize="11.7" HorizontalAlignment="Center"/>
                         <Button Grid.Column="2" Style="{StaticResource FooterButtonStyle}" Content="加群" Click="JoinGroupButton_Click"/>
-                        <TextBlock Grid.Column="3" Text="v0.2.6" Foreground="{StaticResource OnDarkSoftBrush}" FontFamily="Consolas" FontSize="12" HorizontalAlignment="Center"/>
+                        <TextBlock Grid.Column="3" Text="v0.2.8" Foreground="{StaticResource OnDarkSoftBrush}" FontFamily="Consolas" FontSize="12" HorizontalAlignment="Center"/>
                     </Grid>
                 </Grid>
             </Border>

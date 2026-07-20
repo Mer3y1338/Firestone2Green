@@ -38,7 +38,7 @@
 - **数据稳定**：启动前恢复 AuthOnlyOnline 网络，避免套牌 / 环境数据在启动断网窗口里加载失败。
 
 > [!NOTE]
-> v0.2.6 已完成 100% 实际窗口几何测试，并通过 125%～200% DPI 布局模拟审计；左侧功能顺序固定为 **一键处理 → 持续化与打包 → 精细控制**。
+> v0.2.8 保持现有 WPF 界面不变，并继续沿用已通过的 100% 实际窗口几何测试与 125%～200% DPI 布局审计；左侧功能顺序固定为 **一键处理 → 持续化与打包 → 精细控制**。
 
 ## 快速开始
 
@@ -64,7 +64,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 
 | 名称 | 类型 | 作用 |
 | --- | --- | --- |
-| `Firestone2Green` | 后台事件监听任务 | 登录后常驻监听 Firestone 手动启动事件；只有检测到 `-launchapp` 启动 Firestone 时才会静默补授权，不会主动拉起 Firestone。 |
+| `Firestone2Green` | 后台事件监听任务 | 登录后常驻监听 Firestone 手动启动事件；检测到 `-launchapp` 后只探测当前有效的 Automation 端口，成功时补授权，失败时仅维持网络规则，不会主动拉起或反复重启 Firestone。 |
 | `Firestone2Green Launch` | 后台按需任务 | 由桌面快捷方式触发，静默启动 Firestone 并完成授权、头像修复和网络恢复。 |
 | `Firestone2Green 启动 Firestone.lnk` | 桌面快捷方式 | 普通用户日常启动 Firestone 的入口。 |
 | `%LOCALAPPDATA%\Firestone2Green\LaunchFirestone2Green.vbs` | 隐藏启动脚本 | 负责无窗口触发后台按需任务。 |
@@ -75,7 +75,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 - 不弹授权完成提示。
 - 不弹额外确认窗口。
 - 重启电脑后仍可通过启动事件监听自动维持本地授权。
-- 如果用原始 Firestone 图标手动启动且未开启 automation，后台事件监听检测到后会自动静默重启并补授权；不会在你未启动 Firestone 时主动拉起。
+- 如果用原始 Firestone 图标启动但本次没有有效 Automation 接口，后台监听只维持网络规则并等待下一次启动事件，不会结束或反复重启 Firestone。需要稳定自动授权时请使用桌面 **Firestone2Green 启动 Firestone** 快捷方式。
 
 ## 快捷方式自动授权流程
 
@@ -86,7 +86,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 1. 校验 Firestone 本地文件完整性。
 2. 清理异常缓存和旧进程。
 3. 在 Firestone 启动前切换到 `AuthOnlyOnline` 网络模式，保证套牌、环境数据和记牌器数据可以正常联网加载。
-4. 使用兼容启动回退打开 Firestone：优先尝试旧式 `-launchapp -from-desktop + automation`，再尝试新版 `--launchapp --origin desktop + automation`，以适配不同来源安装的 Overwolf。
+4. 先检测默认 Automation 端口 `18765`；若被其他程序占用，则只按顺序尝试 `18766`～`18770`，再严格使用已验证的 `OverwolfLauncher.exe -launchapp <AppId> -from-desktop` 标准命令打开 Firestone。程序不会结束端口占用进程，Automation 参数也不会混入应用启动命令。
 5. 等待 Firestone 后台窗口和主窗口授权服务初始化。
 6. 同时补齐后台窗口与主窗口的本地授权状态。
 7. 修复左下角登录头像。
@@ -99,15 +99,15 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 
 ### 为什么“先装 Overwolf，再从里面安装 Firestone”的用户点击快捷方式没反应？
 
-不同来源安装的 Overwolf 对启动参数的兼容性不完全一致：部分环境只稳定接受旧式 `-launchapp <AppId> -from-desktop`，部分环境接受新版 `--launchapp <AppId> --origin desktop`。旧版本只使用单一新版参数，所以某些用户会看到桌面快捷方式静默触发后没有明显反应。
+v0.2.6 把 `--automation` / `--enable-automation` 混入 `-launchapp` 命令，在部分 Overwolf 安装中会导致 Firestone 根本没有启动。v0.2.8 已将两步彻底拆开：先启动 automation runtime，再只使用用户已验证可用的 `OverwolfLauncher.exe -launchapp <AppId> -from-desktop`。
 
-新版已加入多启动方式回退：旧式 + automation、新版 + automation、混合参数都会依次尝试；如果 automation 仍不可用，也会尝试普通方式打开 Firestone，并在日志里提示原因。升级后请重新安装持续修复，让快捷方式指向新版脚本。
+如果 `18765` 已经是有效 Automation 会直接复用；未监听时会用它启动 Automation；被普通 HTTP、非 HTTP 服务或其他程序占用时，会自动尝试 `18766`～`18770`。全部候选端口都失败但标准启动命令已成功发送时，流程会记录 `LaunchOnlyDegraded`：Firestone 保持正常启动，网络保持 `AuthOnlyOnline`，本次仅跳过运行时补授权，不再错误返回退出码 `1`。程序不会结束 `NetHost.exe`、System 或任何未知端口占用进程。
 
 如果点击快捷方式后没有自动授权：
 
 1. 等待至少 `60` 秒。
 2. 确认是通过桌面的 **Firestone2Green 启动 Firestone** 快捷方式启动，而不是原始 Firestone 图标。
-3. 如果刚升级过 Firestone2Green，管理员运行 `Firestone2Green_v???.exe`，先点 **移除持续修复**，再点 **安装持续修复**，确保桌面快捷方式和后台任务使用新版脚本。
+3. 如果刚升级过 Firestone2Green，管理员运行新版 `Firestone2Green_v???.exe` 并点击一次 **一键重启并授权**。新版会安全刷新已经安装的 Firestone2Green 后台监听器，不需要手工结束系统进程；如需重建桌面快捷方式，可再点击一次 **安装持续修复**。
 4. 点击 **一键重启并授权** 立即重启并补授权。
 5. 点击 **验证状态**，确认报告中显示 `NetworkMode = AuthOnlyOnline`。
 
@@ -165,7 +165,7 @@ Firestone2Green/
 
 ### 重启电脑后还需要手动授权吗？
 
-安装 **持续修复** 后不需要每次手动打开 GUI。推荐重启后使用桌面的 **Firestone2Green 启动 Firestone** 快捷方式。如果使用原始图标手动启动，后台事件监听也会在检测到 `-launchapp` 后立即静默重启补授权；持续任务本身不会在你未启动时主动拉起 Firestone。
+安装 **持续修复** 后不需要每次手动打开 GUI。推荐重启后使用桌面的 **Firestone2Green 启动 Firestone** 快捷方式。如果使用原始图标手动启动，后台监听会在检测到 `-launchapp` 后探测本次有效 Automation 端口：接口可用时补授权，不可用时仅维持网络规则，不会反复重启 Firestone；持续任务本身也不会在你未启动时主动拉起 Firestone。
 
 ### 完成授权后会弹窗吗？
 
@@ -179,7 +179,7 @@ Firestone2Green/
 
 新版会读取 Windows 注册表中的实际 hosts 目录，不再只认固定路径；缺少无扩展名 `hosts` 时会自动创建，`hosts` 不存在、为零字节或只有空白内容时，会先恢复 Windows 默认 HOSTS 模板，再加入 Firestone2Green 阻断段。只有 `hosts.txt` 时会复制内容并保留原文件；如果 `hosts.txt` 也是空的，目标 `hosts` 同样会恢复默认模板。已有非空 hosts 内容不会被覆盖。写入前还会自动解除只读、重试短时占用、临时修复文件 ACL，并把原内容备份到 `%LOCALAPPDATA%\Firestone2Green\hosts-backups`（最多保留 10 份）。
 
-如果日志仍显示 `HOSTS_PROTECTION_ACTIVE`、`HOSTS_FILE_BUSY`、`HOSTS_CREATE_FAILED` 或 `HOSTS_WRITE_VERIFY_FAILED`，按日志关闭安全软件的 **Hosts 保护 / 系统文件防护**，或允许 `Firestone2Green.exe` 和 `powershell.exe` 修改 hosts，然后重新点击原按钮即可。不要下载所谓“hosts 修复文件”，也不要手工给 Everyone / Users 完全控制权限；无需联系作者。
+v0.2.8 起，如果日志出现 `HOSTS_PROTECTION_ACTIVE`、`HOSTS_FILE_BUSY`、`HOSTS_CREATE_FAILED` 或 `HOSTS_WRITE_VERIFY_FAILED`，程序会先回滚 hosts，再自动改用 Windows 防火墙精确域名阻断：优先使用动态 FQDN 规则；旧系统不支持时改用解析后的 IP 规则。成功创建后会复用现有规则，不再每次启动重复写入受保护的 hosts。一般不需要关闭火绒、360 或电脑管家的 Hosts 保护，也不要下载所谓“hosts 修复文件”或手工给 Everyone / Users 完全控制权限。只有 hosts 与防火墙都被系统策略禁止时，报告才会显示 `UnprotectedRuntime`；程序仍会继续本地启动与授权，但会明确提示精确端点阻断未生效。
 
 ### 日志出现退出码 1 时如何定位？
 

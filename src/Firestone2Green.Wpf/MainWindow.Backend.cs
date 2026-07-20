@@ -19,7 +19,7 @@ public partial class MainWindow
     private const string ConfigFileName = "config.ini";
     private const string OverwolfLauncherFile = "OverwolfLauncher.exe";
     private const string OverwolfMainFile = "Overwolf.exe";
-    private const string AppVersion = "0.2.6";
+    private const string AppVersion = "0.2.8";
     private const string OfficialRepoUrl = "https://github.com/Mer3y1338/Firestone2Green";
     private const string OfficialGroupJoinUrl = "https://qm.qq.com/q/ZP3oGLAlQ4";
     private const string LatestReleaseApiUrl = "https://api.github.com/repos/Mer3y1338/Firestone2Green/releases/latest";
@@ -34,6 +34,7 @@ public partial class MainWindow
     private string latestReleaseUrl = LatestReleasePageUrl;
     private bool running;
     private bool authSuccessSeen;
+    private bool launchOnlyDegradedSeen;
     private readonly HashSet<string> explainedLogErrors = new(StringComparer.OrdinalIgnoreCase);
 
     private Brush InkBrush => (Brush)FindResource("InkBrush");
@@ -158,6 +159,7 @@ public partial class MainWindow
 
         Directory.CreateDirectory(reportDir);
         authSuccessSeen = false;
+        launchOnlyDegradedSeen = false;
         var arguments = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(scriptPath) + " -Mode " + mode + " -AutomationPort 18765";
         if (!string.IsNullOrEmpty(rootForRun)) arguments += " -OverwolfRoot " + Quote(rootForRun);
         if (File.Exists(avatarPath)) arguments += " -AvatarImagePath " + Quote(avatarPath);
@@ -194,8 +196,16 @@ public partial class MainWindow
             {
                 if (IsAuthorizationMode(mode))
                 {
-                    authSuccessSeen = true;
-                    AppendLog("✅ 已成功授权。可以进入 Firestone / 游戏内检查功能是否恢复。");
+                    if (launchOnlyDegradedSeen)
+                    {
+                        authSuccessSeen = false;
+                        AppendLog("⚠ Firestone 已正常启动，但本次自动授权接口暂时不可用；无需结束任何占用端口的程序。");
+                    }
+                    else
+                    {
+                        authSuccessSeen = true;
+                        AppendLog("✅ 已成功授权。可以进入 Firestone / 游戏内检查功能是否恢复。");
+                    }
                 }
                 AppendLog("报告目录: " + reportDir);
             }
@@ -206,7 +216,12 @@ public partial class MainWindow
         }
         finally
         {
-            SetRunning(false, exitCode == 0 && authSuccessSeen ? "已成功授权" : exitCode == 0 ? "就绪" : "任务结束，请查看日志");
+            var finalStatus = exitCode != 0
+                ? "任务结束，请查看日志"
+                : launchOnlyDegradedSeen
+                    ? "已启动，授权暂不可用"
+                    : authSuccessSeen ? "已成功授权" : "就绪";
+            SetRunning(false, finalStatus);
         }
     }
 
@@ -245,13 +260,26 @@ public partial class MainWindow
             LogTextBox.CaretIndex = LogTextBox.Text.Length;
         }
         LogTextBox.ScrollToEnd();
+        DetectLaunchOnlyDegraded(line ?? string.Empty);
         DetectAuthorizationSuccess(line ?? string.Empty);
         AppendFriendlyErrorExplanation(line ?? string.Empty);
     }
 
+    private void DetectLaunchOnlyDegraded(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return;
+        if (line.Contains("F2G_LAUNCH_ONLY_DEGRADED: true", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("自动授权接口暂时不可用", StringComparison.OrdinalIgnoreCase))
+        {
+            launchOnlyDegradedSeen = true;
+            authSuccessSeen = false;
+            SetPill(StatusPill, StatusPillText, "已启动，授权暂不可用", emphasized: false);
+        }
+    }
+
     private void DetectAuthorizationSuccess(string line)
     {
-        if (authSuccessSeen || string.IsNullOrWhiteSpace(line)) return;
+        if (launchOnlyDegradedSeen || authSuccessSeen || string.IsNullOrWhiteSpace(line)) return;
         var value = line.ToLowerInvariant();
         if (value.Contains("授权成功") || value.Contains("authorization succeeded") || value.Contains("ispro=true") || value.Contains("is_pro=true"))
         {
@@ -277,7 +305,7 @@ public partial class MainWindow
         if (value.Contains("hosts") && (value.Contains("access") || value.Contains("拒绝") || value.Contains("denied") || value.Contains("保护")))
         {
             key = "hosts-access-denied";
-            message = "系统 hosts 文件被权限或安全软件保护。请点击“管理员重启”；仍失败时，在安全软件中临时关闭 hosts 保护或把本程序加入允许列表。程序也会继续尝试不依赖 hosts 的本地修复。";
+            message = "系统 hosts 文件被权限或安全软件保护。程序会自动回滚并切换到精确域名防火墙方案；请继续查看后续日志，一般无需关闭火绒等安全软件。只有出现 UnprotectedRuntime 时，才表示 hosts 与防火墙都被系统策略禁止。";
             return true;
         }
         if (value.Contains("未找到 overwolf") || value.Contains("找不到启动器") || value.Contains("overwolflauncher.exe") && value.Contains("未找到"))
@@ -289,7 +317,7 @@ public partial class MainWindow
         if (value.Contains("automation") && (value.Contains("timeout") || value.Contains("超时") || value.Contains("不可用") || value.Contains("localhost:18765")))
         {
             key = "automation-unavailable";
-            message = "Overwolf 本地 automation 接口没有连上。关闭 Overwolf/Firestone 后重新点“一键重启并授权”；升级后请先移除再重新安装持续修复。";
+            message = "程序会自动检查默认端口，并只在 18766-18770 间有限切换；全部不可用时仅正常启动 Firestone，不会结束任何端口占用进程。已安装持续修复时，一键流程会自动刷新旧监听器，无需手工移除后重装。";
             return true;
         }
         if (value.Contains("403") && value.Contains("github"))

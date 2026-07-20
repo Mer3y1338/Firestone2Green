@@ -40,7 +40,7 @@ It helps restore **local authorization, the bottom-left login avatar, full netwo
 - **Stable data loading**: Switches to `AuthOnlyOnline` before starting Firestone, so deck data, meta data, and tracker data can load normally.
 
 > [!NOTE]
-> v0.2.6 passed real 100% window-geometry checks and simulated 125%–200% DPI layout audits. The left-side priority remains **one-click repair → persistence/package → fine control**.
+> v0.2.8 keeps the existing WPF UI unchanged and retains the layout already audited at real 100% geometry plus simulated 125%–200% DPI. The left-side priority remains **one-click repair → persistence/package → fine control**.
 
 ## Quick Start
 
@@ -66,7 +66,7 @@ After clicking **安装持续修复**, the program creates the persistent repair
 
 | Name | Type | Purpose |
 | --- | --- | --- |
-| `Firestone2Green` | Background startup watcher task | Runs after logon and watches for manual Firestone launch events. It only reacts when a `-launchapp` Firestone startup event is detected, and it does not start Firestone by itself. |
+| `Firestone2Green` | Background startup watcher task | Runs after logon and watches for manual Firestone launch events. After a `-launchapp` event it probes only the effective Automation candidates; it repairs authorization when one is valid, otherwise it keeps the network rules without launching or repeatedly restarting Firestone. |
 | `Firestone2Green Launch` | Background on-demand task | Triggered by the desktop shortcut. It silently launches Firestone and completes authorization, avatar repair, and network recovery. |
 | `Firestone2Green 启动 Firestone.lnk` | Desktop shortcut | Recommended daily entry point for regular users. |
 | `%LOCALAPPDATA%\Firestone2Green\LaunchFirestone2Green.vbs` | Hidden launcher script | Triggers the on-demand scheduled task without showing a console window. |
@@ -77,7 +77,7 @@ Persistent repair behavior:
 - No authorization-completed popup.
 - No extra confirmation popup.
 - After reboot, the startup watcher can keep local authorization repaired automatically.
-- If the original Firestone icon is used and Firestone starts without automation, the watcher can detect the manual launch event and silently restart/repair it. It will not launch Firestone when the user has not started Firestone.
+- If the original Firestone icon starts Firestone without a valid Automation endpoint, the watcher keeps the network rules and waits for a later startup event. It does not terminate or repeatedly restart Firestone. Use the **Firestone2Green 启动 Firestone** shortcut for reliable automatic authorization.
 
 ## Shortcut Auto-Authorization Flow
 
@@ -88,7 +88,7 @@ The task runs these steps:
 1. Verifies local Firestone file integrity.
 2. Clears abnormal caches and old processes.
 3. Switches to `AuthOnlyOnline` before launching Firestone, so deck data, meta data, and tracker data can load from the network.
-4. Starts Firestone with a compatibility fallback: old-style `-launchapp -from-desktop + automation` first, then new-style `--launchapp --origin desktop + automation`, so different Overwolf install sources are handled.
+4. Probes the default Automation port `18765`; if another service owns it, only `18766` through `18770` are tried in order. Firestone is then opened only with the verified standard command `OverwolfLauncher.exe -launchapp <AppId> -from-desktop`. The tool never terminates the port owner, and Automation options are never appended to the app-launch command.
 5. Waits for the Firestone background window and main window authorization services to initialize.
 6. Repairs the local authorization state in both the background window and the main window.
 7. Repairs the bottom-left login avatar.
@@ -101,15 +101,15 @@ After automatic authorization succeeds, premium-gated entries in the main window
 
 ### Why can the shortcut appear to do nothing after installing Firestone from inside Overwolf?
 
-Different Overwolf installation sources do not always accept the same launch arguments. Some environments only reliably accept the old `-launchapp <AppId> -from-desktop` form, while others accept the newer `--launchapp <AppId> --origin desktop` form. Older Firestone2Green builds used one launch form, so the silent shortcut could look like it did nothing on some machines.
+v0.2.6 appended `--automation` / `--enable-automation` to the `-launchapp` command. On some Overwolf installations that prevented Firestone from launching at all. v0.2.8 separates the two stages: it bootstraps the automation runtime first, then uses only the user-verified `OverwolfLauncher.exe -launchapp <AppId> -from-desktop` command.
 
-The current build tries multiple launch forms in order: old-style + automation, new-style + automation, and mixed arguments. If automation still cannot be opened, it falls back to a normal Firestone launch and logs the reason. After upgrading, reinstall persistent repair so the shortcut uses the updated script.
+An existing valid Automation service on `18765` is reused. If the port is closed, Overwolf Automation is started there. If it belongs to an ordinary HTTP, non-HTTP, or other service, the tool automatically tries `18766` through `18770`. If every candidate fails but the standard Firestone launch request is accepted, the run is recorded as `LaunchOnlyDegraded`: Firestone remains launched, networking stays in `AuthOnlyOnline`, and runtime authorization is skipped without returning exit code `1`. The tool never terminates `NetHost.exe`, System, or any unknown port owner.
 
 If the shortcut does not appear to authorize automatically:
 
 1. Wait at least `60` seconds.
 2. Make sure you launched Firestone through the desktop shortcut **Firestone2Green 启动 Firestone**, not the original Firestone icon.
-3. If you upgraded Firestone2Green recently, run `Firestone2Green_vVERSION.exe` as administrator, click **移除持续修复**, then **安装持续修复** so the shortcut and background tasks use the new script.
+3. If you upgraded Firestone2Green recently, run the new `Firestone2Green_vVERSION.exe` as administrator and click **一键重启并授权** once. The new build safely refreshes an installed Firestone2Green watcher; no system process needs to be terminated. Click **安装持续修复** again only if you also want to recreate the desktop shortcut.
 4. Click **一键重启并授权** to immediately restart and repair authorization.
 5. Click **验证状态** and confirm the report shows `NetworkMode = AuthOnlyOnline`.
 
@@ -184,7 +184,7 @@ Yes. `Firestone2Green_vVERSION.exe` embeds the script, avatar, and icon. Regular
 
 ### Do I need to authorize manually after reboot?
 
-After installing **安装持续修复**, you do not need to open the GUI every time. After reboot, it is recommended to use the desktop shortcut **Firestone2Green 启动 Firestone**. If the original Firestone icon is used, the background watcher can also react to a `-launchapp` event and silently repair authorization. The persistent task itself will not launch Firestone when you have not started it.
+After installing **安装持续修复**, you do not need to open the GUI every time. After reboot, it is recommended to use the desktop shortcut **Firestone2Green 启动 Firestone**. If the original Firestone icon is used, the watcher probes the effective Automation candidates after a `-launchapp` event: it repairs authorization when an endpoint is valid and otherwise keeps the network rules without repeatedly restarting Firestone. The persistent task itself will not launch Firestone when you have not started it.
 
 ### Will there be popups after authorization completes?
 
@@ -198,7 +198,7 @@ Authorization is runtime state. Firestone2Green repairs the local authorization 
 
 The current build reads the real Windows hosts directory from the registry instead of relying only on a fixed path. If the extensionless `hosts` is missing, zero bytes long, or contains only whitespace, Firestone2Green restores the standard Windows HOSTS template before adding its managed block. It copies and preserves an existing `hosts.txt`; if that file is empty, the destination `hosts` receives the default template. Existing non-empty hosts content is preserved. The tool also clears read-only protection, retries short-lived locks, and temporarily repairs common file ACL restrictions. Before changing existing content, it stores up to 10 backups under `%LOCALAPPDATA%\Firestone2Green\hosts-backups`, then verifies the result and attempts rollback if the write fails.
 
-If the log still shows `HOSTS_PROTECTION_ACTIVE`, `HOSTS_FILE_BUSY`, `HOSTS_CREATE_FAILED`, or `HOSTS_WRITE_VERIFY_FAILED`, close the security product's **Hosts protection / system file protection** page or allow `Firestone2Green.exe` and `powershell.exe` to modify hosts, then click the original action again. Do not download replacement hosts files or permanently grant Full Control to Everyone/Users.
+Starting with v0.2.8, if the log shows `HOSTS_PROTECTION_ACTIVE`, `HOSTS_FILE_BUSY`, `HOSTS_CREATE_FAILED`, or `HOSTS_WRITE_VERIFY_FAILED`, Firestone2Green rolls hosts back and automatically switches to an exact-domain Windows Firewall fallback. It prefers dynamic FQDN rules and uses resolved-IP program rules on older systems. A complete fallback is reused on later launches, so protected machines do not retry the same hosts write every time. In normal cases you do not need to disable security software. Only when both hosts and firewall changes are blocked will the report show `UnprotectedRuntime`; startup and local authorization continue, while the log clearly states that exact-endpoint protection is not active.
 
 ### What if data, deck, or online features do not work?
 
