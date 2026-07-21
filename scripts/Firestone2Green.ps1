@@ -41,6 +41,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Automation port selection is intentionally finite and per-run. The historical
+# default remains 18765; only the documented five fallback ports are considered.
+$Script:DefaultAutomationPort = 18765
+$Script:AutomationFallbackPorts = @(18766, 18767, 18768, 18769, 18770)
+
 # Force UTF-8 for redirected PowerShell output so the WinForms log does not show mojibake.
 try {
   $Script:Utf8NoBom = New-Object System.Text.UTF8Encoding -ArgumentList $false
@@ -3156,16 +3161,58 @@ function Test-AutomationServerReady {
 
 function Get-AutomationPortsToTry {
   param([int]$RequestedPort)
-  $primary = if ($RequestedPort -ge 1 -and $RequestedPort -le 65535) { [int]$RequestedPort } else { 18765 }
+  $primary = if ($RequestedPort -ge 1 -and $RequestedPort -le 65535) {
+    [int]$RequestedPort
+  } else {
+    $Script:DefaultAutomationPort
+  }
+  $candidates = @($primary, $Script:DefaultAutomationPort) + @($Script:AutomationFallbackPorts)
   $ports = New-Object System.Collections.Generic.List[int]
   $seen = @{}
-  foreach ($candidate in @($primary, 18765, 18766, 18767, 18768, 18769, 18770)) {
+  foreach ($candidate in $candidates) {
     if ($candidate -lt 1 -or $candidate -gt 65535) { continue }
     if ($seen.ContainsKey([string]$candidate)) { continue }
     $seen[[string]$candidate] = $true
-    $ports.Add([int]$candidate)
+    [void]$ports.Add([int]$candidate)
   }
-  return @($ports)
+  return @($ports.ToArray())
+}
+
+function Get-AutomationPortCompatibilityMode {
+  param([int]$Port)
+  if ($Port -eq $Script:DefaultAutomationPort) { return 'Default' }
+  return 'FiniteFallback'
+}
+
+function Set-EffectiveAutomationPortState {
+  param(
+    [System.Collections.IDictionary]$State,
+    [int]$RequestedPort,
+    [int]$EffectivePort,
+    $PingResponse,
+    [string]$LaunchResult
+  )
+  Set-State $State 'requestedAutomationPort' $RequestedPort
+  Set-State $State 'effectiveAutomationPort' $EffectivePort
+  Set-State $State 'automationPortFallbackUsed' ($EffectivePort -ne $RequestedPort)
+  Set-State $State 'automationPortCompatibilityMode' (Get-AutomationPortCompatibilityMode -Port $EffectivePort)
+  Set-State $State 'automationPingResponse' $PingResponse
+  Set-State $State 'automationAvailable' $true
+  if ($LaunchResult) { Set-State $State 'automationLaunchResult' $LaunchResult }
+}
+
+function Write-AutomationPortSelectionNotice {
+  param(
+    [int]$RequestedPort,
+    [int]$EffectivePort,
+    [string]$OriginalStatus = ''
+  )
+  if ($EffectivePort -eq $RequestedPort) { return }
+  if ($RequestedPort -eq $Script:DefaultAutomationPort -and $OriginalStatus -eq 'OccupiedNonAutomation') {
+    Write-Host "默认 Automation 端口 $($Script:DefaultAutomationPort) 已被其他程序占用，已自动切换到 $EffectivePort。"
+  } else {
+    Write-Host "请求的 Automation 端口 $RequestedPort 不可用，已自动切换到 $EffectivePort。"
+  }
 }
 
 function Wait-AnyAutomationServerReady {
@@ -3222,8 +3269,13 @@ function Resolve-ExistingAutomationPort {
       pingResponse = $status.pingResponse
       error = [string]$status.error
     }
-    if ($candidate -eq $ports[0]) { Set-OriginalAutomationPortState -State $State -RequestedPort $ports[0] -PortStatus $status }
-    if ($status.status -eq 'ValidAutomation') { $ready = $status; break }
+    if ($candidate -eq $ports[0]) {
+      Set-OriginalAutomationPortState -State $State -RequestedPort $ports[0] -PortStatus $status
+    }
+    if ($status.status -eq 'ValidAutomation') {
+      $ready = $status
+      break
+    }
   }
   Set-State $State 'attemptedAutomationPorts' @($probeRecords)
 
@@ -3233,19 +3285,56 @@ function Resolve-ExistingAutomationPort {
   if (-not $ready) { return $null }
 
   $effectivePort = [int]$ready.port
-  Set-State $State 'effectiveAutomationPort' $effectivePort
-  Set-State $State 'automationPortFallbackUsed' ($effectivePort -ne $ports[0])
-  Set-State $State 'automationPingResponse' $ready.pingResponse
-  Set-State $State 'automationAvailable' $true
-  Set-State $State 'automationLaunchResult' 'ReusedExistingAutomation'
-  if ($effectivePort -ne $ports[0]) {
-    if ($ports[0] -eq 18765 -and $State['originalPortStatus'] -eq 'OccupiedNonAutomation') {
-      Write-Host "默认 Automation 端口 18765 已被其他程序占用，已自动切换到 $effectivePort。"
-    } else {
-      Write-Host "请求的 Automation 端口 $($ports[0]) 不可用，已自动切换到 $effectivePort。"
+  Set-EffectiveAutomationPortState -State $State -RequestedPort $ports[0] -EffectivePort $effectivePort -PingResponse $ready.pingResponse -LaunchResult 'ReusedExistingAutomation'
+  Write-AutomationPortSelectionNotice -RequestedPort $ports[0] -EffectivePort $effectivePort -OriginalStatus ([string]$State['originalPortStatus'])
+  Write-Host "automation 接口可用：localhost:$effectivePort"
+  Write-Host "F2G_EFFECTIVE_AUTOMATION_PORT: $effectivePort"
+  return $effectivePort
+}
+
+function Invoke-FirestoneLaunchCommand {
+  param(
+    [string[]]$Launchers,
+    [string[]]$Arguments,
+    [string]$Description
+  )
+  $attempts = @()
+  foreach ($launcherPath in @($Launchers)) {
+    $attempt = [ordered]@{
+      launcher = $launcherPath
+      arguments = ($Arguments -join ' ')
+      description = $Description
+      startedAt = (Get-Date).ToString('o')
+      accepted = $false
+      processId = 0
+      error = ''
+    }
+    try {
+      Write-Step ("$Description [{0}]" -f (Split-Path -Leaf $launcherPath))
+      $process = Start-Process -FilePath $launcherPath -ArgumentList $Arguments -PassThru
+      $attempt['accepted'] = $true
+      if ($process) { $attempt['processId'] = [int]$process.Id }
+      $attempt['completedAt'] = (Get-Date).ToString('o')
+      $attempts += [pscustomobject]$attempt
+      return [pscustomobject][ordered]@{
+        accepted = $true
+        launcher = $launcherPath
+        processId = [int]$attempt['processId']
+        attempts = @($attempts)
+      }
+    } catch {
+      $attempt['error'] = $_.Exception.Message
+      $attempt['completedAt'] = (Get-Date).ToString('o')
+      $attempts += [pscustomobject]$attempt
+      Write-Warning "$(Split-Path -Leaf $launcherPath) 启动失败：$($_.Exception.Message)"
     }
   }
-  return $effectivePort
+  return [pscustomobject][ordered]@{
+    accepted = $false
+    launcher = ''
+    processId = 0
+    attempts = @($attempts)
+  }
 }
 
 function Start-FirestoneLaunchWithFallback {
@@ -3259,200 +3348,291 @@ function Start-FirestoneLaunchWithFallback {
     throw '未找到可用的 Overwolf 启动程序。'
   }
 
-  $requestedPort = if ($Port -ge 1 -and $Port -le 65535) { [int]$Port } else { 18765 }
+  $requestedPort = if ($Port -ge 1 -and $Port -le 65535) {
+    [int]$Port
+  } else {
+    $Script:DefaultAutomationPort
+  }
   $ports = @(Get-AutomationPortsToTry -RequestedPort $requestedPort)
   Set-State $State 'requestedAutomationPort' $requestedPort
   Set-State $State 'effectiveAutomationPort' $null
   Set-State $State 'automationPortFallbackUsed' $false
+  Set-State $State 'automationPortCompatibilityMode' 'None'
+  Set-State $State 'legacyAutomationCompatibilityUsed' $false
 
   $orderedLaunchers = @(
-    $Launchers | Sort-Object @{ Expression = { if ((Split-Path -Leaf $_) -ieq 'OverwolfLauncher.exe') { 0 } else { 1 } } }, @{ Expression = { $_ } }
+    $Launchers | Sort-Object `
+      @{ Expression = { if ((Split-Path -Leaf $_) -ieq 'OverwolfLauncher.exe') { 0 } else { 1 } } }, `
+      @{ Expression = { $_ } }
   )
   $preferredLauncher = $orderedLaunchers[0]
+  $legacyLauncher = @(
+    $orderedLaunchers |
+      Where-Object { (Split-Path -Leaf $_) -ieq 'OverwolfLauncher.exe' } |
+      Select-Object -First 1
+  )
+  if (-not $legacyLauncher) { $legacyLauncher = $preferredLauncher } else { $legacyLauncher = $legacyLauncher[0] }
+
   $overwolfRoot = Split-Path -Parent $preferredLauncher
   $runtimePath = Join-Path $overwolfRoot 'Overwolf.exe'
   if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) { $runtimePath = $preferredLauncher }
 
-  $launchArgs = @('-launchapp', $AppId, '-from-desktop')
-  $normalLaunchAccepted = $false
-  $normalLaunchAttempts = @()
-  $portAttempts = @()
+  $standardArgs = @('-launchapp', $AppId, '-from-desktop')
+  $normalLaunchAttempts = New-Object System.Collections.Generic.List[object]
+  $flow = [ordered]@{ firestoneLaunchIssued = $false }
+  $records = [ordered]@{}
 
   foreach ($candidatePort in $ports) {
-    $record = [ordered]@{
+    $status = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 1000
+    $records[[string]$candidatePort] = [ordered]@{
       port = $candidatePort
+      compatibilityMode = Get-AutomationPortCompatibilityMode -Port $candidatePort
       startedAt = (Get-Date).ToString('o')
-      statusBefore = ''
-      owner = ''
-      pid = 0
-      path = ''
-      listeners = @()
+      statusBefore = [string]$status.status
+      owner = [string]$status.ownerInfo.owner
+      pid = [int]$status.ownerInfo.pid
+      path = [string]$status.ownerInfo.path
+      listeners = @($status.ownerInfo.listeners)
       launchAttempted = $false
+      launchMode = ''
       launchExecutable = ''
       launchArguments = ''
       launchStarted = $false
-      statusAfter = ''
-      pingResponse = $null
-      error = ''
+      launchProcessId = 0
+      launchHistory = @()
+      statusAfter = [string]$status.status
+      pingResponse = $status.pingResponse
+      error = [string]$status.error
+      completedAt = (Get-Date).ToString('o')
     }
-
-    $before = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 1000
-    $record['statusBefore'] = [string]$before.status
-    $record['owner'] = [string]$before.ownerInfo.owner
-    $record['pid'] = [int]$before.ownerInfo.pid
-    $record['path'] = [string]$before.ownerInfo.path
-    $record['listeners'] = @($before.ownerInfo.listeners)
-    $record['pingResponse'] = $before.pingResponse
     if ($candidatePort -eq $requestedPort) {
-      Set-OriginalAutomationPortState -State $State -RequestedPort $requestedPort -PortStatus $before
+      Set-OriginalAutomationPortState -State $State -RequestedPort $requestedPort -PortStatus $status
     }
+  }
 
-    $canVerifyCandidate = $false
-    if ($before.status -eq 'ValidAutomation') {
-      $canVerifyCandidate = $true
-    } elseif ($before.status -eq 'Closed') {
-      $automationArgs = @('--automation', "$candidatePort", '--enable-automation')
+  $syncRecords = {
+    $snapshot = @()
+    foreach ($candidatePort in $ports) {
+      $item = $records[[string]$candidatePort]
+      if ($item) { $snapshot += [pscustomobject]$item }
+    }
+    Set-State $State 'attemptedAutomationPorts' @($snapshot)
+  }
+  & $syncRecords
+
+  $finishReady = {
+    param($Ready, [string]$LaunchResult, [string]$SelectedMode, [string]$SelectedLauncher)
+    $readyPort = [int]$Ready.port
+    $record = $records[[string]$readyPort]
+    if ($record) {
+      $record['statusAfter'] = 'ValidAutomation'
+      $record['pingResponse'] = $Ready.pingResponse
+      $record['completedAt'] = (Get-Date).ToString('o')
+    }
+    & $syncRecords
+    Set-State $State 'launchAttempts' @($normalLaunchAttempts.ToArray())
+    Set-State $State 'selectedLaunchMode' $SelectedMode
+    Set-State $State 'selectedLauncher' $SelectedLauncher
+    if ($SelectedMode -like '*Legacy*') {
+      Set-State $State 'legacyAutomationCompatibilityUsed' $true
+    }
+    Set-EffectiveAutomationPortState -State $State -RequestedPort $requestedPort -EffectivePort $readyPort -PingResponse $Ready.pingResponse -LaunchResult $LaunchResult
+    Write-AutomationPortSelectionNotice -RequestedPort $requestedPort -EffectivePort $readyPort -OriginalStatus ([string]$State['originalPortStatus'])
+    Write-Host "automation 接口可用：localhost:$readyPort"
+    Write-Host "F2G_EFFECTIVE_AUTOMATION_PORT: $readyPort"
+    return $readyPort
+  }
+
+  $tryTwoStage = {
+    param([int]$candidatePort)
+    $record = $records[[string]$candidatePort]
+    $runtimeArgs = @('--automation', "$candidatePort", '--enable-automation')
+    if ($record) {
       $record['launchAttempted'] = $true
+      $record['launchMode'] = 'TwoStageRuntime'
       $record['launchExecutable'] = $runtimePath
-      $record['launchArguments'] = ($automationArgs -join ' ')
-      Write-Step "预启动 Overwolf automation runtime：localhost:$candidatePort"
-      try {
-        $bootstrapProcess = Start-Process -FilePath $runtimePath -ArgumentList $automationArgs -PassThru
+      $record['launchArguments'] = ($runtimeArgs -join ' ')
+    }
+    try {
+      Write-Step "启动 Overwolf Automation runtime：localhost:$candidatePort"
+      $bootstrap = Start-Process -FilePath $runtimePath -ArgumentList $runtimeArgs -PassThru
+      if ($record) {
         $record['launchStarted'] = $true
-        if ($bootstrapProcess) { $record['launchProcessId'] = $bootstrapProcess.Id }
-        $canVerifyCandidate = $true
-      } catch {
-        $record['error'] = $_.Exception.Message
-        Write-Warning "端口 $candidatePort 的 automation runtime 启动失败，将尝试下一个有限候选端口：$($_.Exception.Message)"
+        if ($bootstrap) { $record['launchProcessId'] = [int]$bootstrap.Id }
       }
-    } elseif ($before.status -eq 'OccupiedNonAutomation') {
-      $record['error'] = '端口已被非 Automation 服务占用；已安全跳过，不会结束占用进程。'
-    } else {
-      $record['error'] = '端口连接或响应超时；已安全跳过，不会结束占用进程。'
-    }
-
-    if ($canVerifyCandidate -and -not $normalLaunchAccepted) {
-      Start-Sleep -Milliseconds 800
-      $launcherIndex = 0
-      foreach ($launcherPath in $orderedLaunchers) {
-        $launcherIndex++
-        $launchRecord = [ordered]@{
-          index = $launcherIndex
-          launcher = $launcherPath
-          args = ($launchArgs -join ' ')
-          startedAt = (Get-Date).ToString('o')
-          launchRequestAccepted = $false
-        }
-        try {
-          Write-Step ("标准启动 Firestone [{0}]" -f (Split-Path -Leaf $launcherPath))
-          $launchProcess = Start-Process -FilePath $launcherPath -ArgumentList $launchArgs -PassThru
-          $launchRecord['launchRequestAccepted'] = $true
-          if ($launchProcess) { $launchRecord['launcherProcessId'] = $launchProcess.Id }
-          $launchRecord['completedAt'] = (Get-Date).ToString('o')
-          $normalLaunchAttempts += [pscustomobject]$launchRecord
-          $normalLaunchAccepted = $true
-          Set-State $State 'selectedLaunchMode' '标准 Firestone 启动：-launchapp -from-desktop'
-          Set-State $State 'selectedLauncher' $launcherPath
-          Set-State $State 'normalLaunchCommand' ("{0} {1}" -f $launcherPath, ($launchArgs -join ' '))
-          break
-        } catch {
-          $launchRecord['error'] = $_.Exception.Message
-          $launchRecord['completedAt'] = (Get-Date).ToString('o')
-          $normalLaunchAttempts += [pscustomobject]$launchRecord
-          Write-Warning "$(Split-Path -Leaf $launcherPath) 普通启动失败：$($_.Exception.Message)"
-        }
-      }
-      Set-State $State 'launchAttempts' @($normalLaunchAttempts)
-      if (-not $normalLaunchAccepted) {
-        $record['error'] = (($record['error'], '标准 Firestone 启动命令失败。') | Where-Object { $_ }) -join ' '
-      }
-    }
-
-    if ($canVerifyCandidate -and $normalLaunchAccepted) {
-      $waitSeconds = if ($portAttempts.Count -eq 0) { 25 } else { 10 }
-      $ready = Wait-AnyAutomationServerReady -Ports @($candidatePort) -TimeoutSeconds $waitSeconds
-      if ($ready) {
-        $record['statusAfter'] = 'ValidAutomation'
-        $record['pingResponse'] = $ready.pingResponse
-        $record['completedAt'] = (Get-Date).ToString('o')
-        $portAttempts += [pscustomobject]$record
-        Set-State $State 'attemptedAutomationPorts' @($portAttempts)
-        Set-State $State 'effectiveAutomationPort' ([int]$ready.port)
-        Set-State $State 'automationPortFallbackUsed' ([int]$ready.port -ne $requestedPort)
-        Set-State $State 'automationPingResponse' $ready.pingResponse
-        Set-State $State 'automationAvailable' $true
-        Set-State $State 'launchOnlyFallback' $false
-        $launchResult = if ($before.status -eq 'ValidAutomation') { 'ReusedExistingAutomation' } else { 'StartedAutomation' }
-        Set-State $State 'automationLaunchResult' $launchResult
-        if ([int]$ready.port -ne $requestedPort) {
-          if ($requestedPort -eq 18765 -and $State['originalPortStatus'] -eq 'OccupiedNonAutomation') {
-            Write-Host "默认 Automation 端口 18765 已被其他程序占用，已自动切换到 $([int]$ready.port)。"
+      & $syncRecords
+      $standardLauncherUsed = ''
+      $standardLaunchIssuedHere = $false
+      $running = @(Get-FirestoneAppProcesses -AppId $AppId)
+      if (-not $flow.firestoneLaunchIssued) {
+        if ($running.Count -eq 0) {
+          # The runtime is only a bootstrap. Firestone must be launched before
+          # pingServer can become valid on the affected Overwolf builds.
+          $standardResult = Invoke-FirestoneLaunchCommand -Launchers $orderedLaunchers -Arguments $standardArgs -Description '启动 Firestone（Automation runtime 已启动）'
+          foreach ($attempt in @($standardResult.attempts)) { [void]$normalLaunchAttempts.Add($attempt) }
+          if ($standardResult.accepted) {
+            $flow.firestoneLaunchIssued = $true
+            $standardLaunchIssuedHere = $true
+            $standardLauncherUsed = $standardResult.launcher
+            if ($record) {
+              $record['launchHistory'] = @($record['launchHistory']) + @($standardResult.attempts)
+            }
           } else {
-            Write-Host "请求的 Automation 端口 $requestedPort 不可用，已自动切换到 $([int]$ready.port)。"
+            if ($record) { $record['error'] = 'Automation runtime 已启动，但 Firestone 标准启动命令失败。' }
+            & $syncRecords
+            return $null
           }
+        } else {
+          $flow.firestoneLaunchIssued = $true
         }
-        Write-Host "automation 接口可用：localhost:$([int]$ready.port)"
-        Write-Host "F2G_EFFECTIVE_AUTOMATION_PORT: $([int]$ready.port)"
-        return [int]$ready.port
       }
-      $after = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 1000
-      $record['statusAfter'] = [string]$after.status
-      $record['pingResponse'] = $after.pingResponse
-      $afterError = if ($after.error) { [string]$after.error } else { "端口 $candidatePort 启动后验证失败。" }
-      $record['error'] = (($record['error'], $afterError) | Where-Object { $_ }) -join ' '
-    } elseif (-not $record['statusAfter']) {
-      $record['statusAfter'] = [string]$before.status
+
+      # Give the first ordinary Firestone launch enough time to initialize. If
+      # a previous candidate already launched Firestone, only the finite
+      # runtime probe is needed for the next candidate.
+      $readyTimeoutSeconds = if ($standardLaunchIssuedHere) { 25 } else { 8 }
+      $ready = Wait-AnyAutomationServerReady -Ports @($candidatePort) -TimeoutSeconds $readyTimeoutSeconds
+      if ($ready) {
+        $launchResult = if ($standardLaunchIssuedHere) { 'StartedAutomationTwoStage' } else { 'StartedAutomationRuntimeForExistingFirestone' }
+        $selectedMode = if ($standardLauncherUsed) { 'StandardLauncher' } else { 'ExistingFirestone' }
+        return [int](& $finishReady $ready $launchResult $selectedMode $standardLauncherUsed)
+      }
+      if ($record) { $record['error'] = 'Firestone 启动后未通过 pingServer 验证。' }
+      & $syncRecords
+    } catch {
+      if ($record) { $record['error'] = $_.Exception.Message }
+      & $syncRecords
     }
-
-    $record['completedAt'] = (Get-Date).ToString('o')
-    $portAttempts += [pscustomobject]$record
-    Set-State $State 'attemptedAutomationPorts' @($portAttempts)
-  }
-
-  if (-not $normalLaunchAccepted) {
-    $launcherIndex = 0
-    foreach ($launcherPath in $orderedLaunchers) {
-      $launcherIndex++
-      $launchRecord = [ordered]@{
-        index = $launcherIndex
-        launcher = $launcherPath
-        args = ($launchArgs -join ' ')
-        startedAt = (Get-Date).ToString('o')
-        launchRequestAccepted = $false
-      }
-      try {
-        Write-Step ("Automation 候选端口均不可用，使用标准方式启动 Firestone [{0}]" -f (Split-Path -Leaf $launcherPath))
-        $launchProcess = Start-Process -FilePath $launcherPath -ArgumentList $launchArgs -PassThru
-        $launchRecord['launchRequestAccepted'] = $true
-        if ($launchProcess) { $launchRecord['launcherProcessId'] = $launchProcess.Id }
-        $launchRecord['completedAt'] = (Get-Date).ToString('o')
-        $normalLaunchAttempts += [pscustomobject]$launchRecord
-        $normalLaunchAccepted = $true
-        Set-State $State 'selectedLaunchMode' '标准 Firestone 启动：-launchapp -from-desktop'
-        Set-State $State 'selectedLauncher' $launcherPath
-        Set-State $State 'normalLaunchCommand' ("{0} {1}" -f $launcherPath, ($launchArgs -join ' '))
-        break
-      } catch {
-        $launchRecord['error'] = $_.Exception.Message
-        $launchRecord['completedAt'] = (Get-Date).ToString('o')
-        $normalLaunchAttempts += [pscustomobject]$launchRecord
-      }
-    }
-    Set-State $State 'launchAttempts' @($normalLaunchAttempts)
-  }
-
-  Set-State $State 'automationAvailable' $false
-  Set-State $State 'launchOnlyFallback' $normalLaunchAccepted
-  $finalLaunchResult = if ($normalLaunchAccepted) { 'LaunchOnlyDegraded' } else { 'LaunchFailed' }
-  Set-State $State 'automationLaunchResult' $finalLaunchResult
-  Set-State $State 'launchResult' $finalLaunchResult
-  Set-State $State 'authSkippedReason' 'Automation 候选端口 18765-18770 均未通过 pingServer 验证。'
-  if ($normalLaunchAccepted) {
-    Write-Host 'F2G_LAUNCH_ONLY_DEGRADED: true'
-    Write-Warning 'Firestone 已尝试正常启动，但自动授权接口暂时不可用；程序不会结束任何端口占用进程，并保持启动前已建立的网络模式。'
     return $null
   }
-  throw "Firestone 启动失败：所有可用的 Overwolf 启动程序都无法执行标准命令 ‘-launchapp $AppId -from-desktop’。"
+
+  # A validated endpoint is already owned by a working Automation service.
+  # Reuse it without sending another Firestone launch request; this prevents
+  # continuous repair from turning a healthy session into a restart loop.
+  foreach ($candidatePort in $ports) {
+    $status = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 900
+    if ($status.status -eq 'ValidAutomation') {
+      $record = $records[[string]$candidatePort]
+      if ($record) {
+        $record['statusAfter'] = 'ValidAutomation'
+        $record['pingResponse'] = $status.pingResponse
+      }
+      return [int](& $finishReady $status 'ReusedExistingAutomation' 'ReuseExistingAutomation' '')
+    }
+  }
+
+  # The primary port keeps the exact v0.2.7-compatible direct command first.
+  # This restores the startup mode that works on older Overwolf builds.
+  $primaryBefore = Get-AutomationPortStatus -Port $requestedPort -TimeoutMilliseconds 1000
+  $primaryRecord = $records[[string]$requestedPort]
+  if ($primaryBefore.status -eq 'Closed') {
+    $legacyArgs = @('-launchapp', $AppId, '-from-desktop', '--automation', "$requestedPort", '--enable-automation')
+    if ($primaryRecord) {
+      $primaryRecord['launchAttempted'] = $true
+      $primaryRecord['launchMode'] = 'LegacyDirectLauncher'
+      $primaryRecord['launchExecutable'] = $legacyLauncher
+      $primaryRecord['launchArguments'] = ($legacyArgs -join ' ')
+    }
+    $legacyResult = Invoke-FirestoneLaunchCommand -Launchers @($legacyLauncher) -Arguments $legacyArgs -Description "使用旧版兼容参数启动 Firestone + Automation（端口 $requestedPort）"
+    foreach ($attempt in @($legacyResult.attempts)) { [void]$normalLaunchAttempts.Add($attempt) }
+    if ($legacyResult.accepted) {
+      $flow.firestoneLaunchIssued = $true
+      if ($primaryRecord) {
+        $primaryRecord['launchStarted'] = $true
+        $primaryRecord['launchProcessId'] = [int]$legacyResult.processId
+        $primaryRecord['launchHistory'] = @($legacyResult.attempts)
+      }
+      & $syncRecords
+      $ready = Wait-AnyAutomationServerReady -Ports @($requestedPort) -TimeoutSeconds 25
+      if ($ready) {
+        return [int](& $finishReady $ready 'StartedAutomationLegacyDirect' 'LegacyDirectLauncher' $legacyResult.launcher)
+      }
+      if ($primaryRecord) { $primaryRecord['error'] = '旧版兼容启动后未通过 pingServer 验证；将继续尝试有限备用端口。' }
+    } else {
+      if ($primaryRecord) {
+        $primaryRecord['error'] = '旧版兼容启动命令未能执行；将尝试两段式 Automation 启动。'
+        $primaryRecord['launchHistory'] = @($legacyResult.attempts)
+      }
+    }
+    & $syncRecords
+    # Compatibility may have started Firestone without exposing Automation.
+    # Always allow one two-stage attempt on the primary port: when a launch
+    # was already accepted, tryTwoStage only bootstraps runtime and waits;
+    # it never issues a second -launchapp request.
+    $twoStageResult = & $tryTwoStage $requestedPort
+    if ($null -ne $twoStageResult) { return [int]$twoStageResult }
+    & $syncRecords
+  }
+
+  # For an occupied/timeout primary port, and for a primary launch that did
+  # not expose Automation, use only the finite fallback list. Each fallback
+  # follows the documented two-stage flow: bootstrap the selected port first,
+  # then issue at most one ordinary Firestone launch request.
+  $fallbackPorts = @($ports | Where-Object { $_ -ne $requestedPort })
+  foreach ($candidatePort in $fallbackPorts) {
+    $before = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 1000
+    $record = $records[[string]$candidatePort]
+    if ($record) {
+      $record['statusBefore'] = [string]$before.status
+      $record['owner'] = [string]$before.ownerInfo.owner
+      $record['pid'] = [int]$before.ownerInfo.pid
+      $record['path'] = [string]$before.ownerInfo.path
+      $record['listeners'] = @($before.ownerInfo.listeners)
+      $record['pingResponse'] = $before.pingResponse
+      $record['statusAfter'] = [string]$before.status
+      $record['error'] = [string]$before.error
+    }
+    if ($before.status -eq 'ValidAutomation') {
+      return [int](& $finishReady $before 'ReusedExistingAutomation' 'ReuseExistingAutomation' '')
+    }
+    if ($before.status -eq 'OccupiedNonAutomation') {
+      if ($record) { $record['error'] = '端口已被非 Automation 服务占用；已安全跳过，不会结束占用进程。' }
+      & $syncRecords
+      continue
+    }
+    if ($before.status -eq 'TimedOut') {
+      if ($record) { $record['error'] = '端口连接或响应超时；已安全跳过，不会结束占用进程。' }
+      & $syncRecords
+      continue
+    }
+    if ($before.status -ne 'Closed') { continue }
+
+    $twoStageResult = & $tryTwoStage $candidatePort
+    if ($null -ne $twoStageResult) { return [int]$twoStageResult }
+  }
+
+  # Last resort: send one ordinary launch only when no previous launch request
+  # was accepted and no Firestone process is already running. This keeps the
+  # user-facing fallback safe and avoids repeated restart attempts.
+  if (-not $flow.firestoneLaunchIssued) {
+    $running = @(Get-FirestoneAppProcesses -AppId $AppId)
+    if ($running.Count -eq 0) {
+      $standardResult = Invoke-FirestoneLaunchCommand -Launchers $orderedLaunchers -Arguments $standardArgs -Description 'Automation 端口均不可用，仍尝试标准启动 Firestone'
+      foreach ($attempt in @($standardResult.attempts)) { [void]$normalLaunchAttempts.Add($attempt) }
+      if ($standardResult.accepted) {
+        $flow.firestoneLaunchIssued = $true
+        Set-State $State 'selectedLaunchMode' 'StandardLauncherDegraded'
+        Set-State $State 'selectedLauncher' $standardResult.launcher
+      }
+    } else {
+      $flow.firestoneLaunchIssued = $true
+    }
+  }
+
+  & $syncRecords
+  Set-State $State 'launchAttempts' @($normalLaunchAttempts.ToArray())
+  Set-State $State 'automationAvailable' $false
+  Set-State $State 'launchOnlyFallback' ([bool]$flow.firestoneLaunchIssued)
+  $finalLaunchResult = if ($flow.firestoneLaunchIssued) { 'LaunchOnlyDegraded' } else { 'LaunchFailed' }
+  Set-State $State 'automationLaunchResult' $finalLaunchResult
+  Set-State $State 'launchResult' $finalLaunchResult
+  Set-State $State 'authSkippedReason' ("Automation 端口 $($ports -join ', ') 均未通过 pingServer 验证。")
+  if ($flow.firestoneLaunchIssued) {
+    Write-Host 'F2G_LAUNCH_ONLY_DEGRADED: true'
+    Write-Warning 'Firestone 已尝试启动，但自动授权接口暂时不可用；本次进入仅启动降级模式。'
+    return $null
+  }
+  throw "Firestone 启动失败：Overwolf 启动程序无法执行，且 Automation 端口 $($ports -join ', ') 均不可用。"
 }
 
 function Start-FirestoneWithAutomation {

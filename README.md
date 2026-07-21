@@ -1,4 +1,4 @@
-# Firestone2Green
+﻿# Firestone2Green
 
 <div align="center">
 
@@ -86,7 +86,7 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 1. 校验 Firestone 本地文件完整性。
 2. 清理异常缓存和旧进程。
 3. 在 Firestone 启动前切换到 `AuthOnlyOnline` 网络模式，保证套牌、环境数据和记牌器数据可以正常联网加载。
-4. 先检测默认 Automation 端口 `18765`；若被其他程序占用，则只按顺序尝试 `18766`～`18770`，再严格使用已验证的 `OverwolfLauncher.exe -launchapp <AppId> -from-desktop` 标准命令打开 Firestone。程序不会结束端口占用进程，Automation 参数也不会混入应用启动命令。
+4. 先检测默认 Automation 端口 `18765`。端口空闲时优先恢复 v0.2.7 已验证的兼容命令 `OverwolfLauncher.exe -launchapp <AppId> -from-desktop --automation 18765 --enable-automation`；端口被占用或启动后验证失败时，只按顺序尝试 `18766`～`18770`。尚未启动 Firestone 时，备用流程会先启动 Automation runtime、紧接着发送一次标准启动命令，再验证 `pingServer`；如果兼容启动请求已经发出，备用端口只初始化 runtime，不会再次启动 Firestone。程序不会结束端口占用进程。
 5. 等待 Firestone 后台窗口和主窗口授权服务初始化。
 6. 同时补齐后台窗口与主窗口的本地授权状态。
 7. 修复左下角登录头像。
@@ -99,9 +99,9 @@ Firestone2Green 的持久化方式是 **后台自动补授权**，不会修改 F
 
 ### 为什么“先装 Overwolf，再从里面安装 Firestone”的用户点击快捷方式没反应？
 
-v0.2.6 把 `--automation` / `--enable-automation` 混入 `-launchapp` 命令，在部分 Overwolf 安装中会导致 Firestone 根本没有启动。v0.2.8 已将两步彻底拆开：先启动 automation runtime，再只使用用户已验证可用的 `OverwolfLauncher.exe -launchapp <AppId> -from-desktop`。
+部分 Overwolf 版本只会在 v0.2.7 使用的直接兼容命令中正确建立 Automation 接口；最初的 v0.2.8 只使用两段式启动，因此这些用户会正常打开 Firestone，却无法完成自动授权。当前修复已恢复直接兼容路径，但只在目标端口空闲时使用，并且必须通过标准 `pingServer` 验证；失败后才进入有限备用端口流程。
 
-如果 `18765` 已经是有效 Automation 会直接复用；未监听时会用它启动 Automation；被普通 HTTP、非 HTTP 服务或其他程序占用时，会自动尝试 `18766`～`18770`。全部候选端口都失败但标准启动命令已成功发送时，流程会记录 `LaunchOnlyDegraded`：Firestone 保持正常启动，网络保持 `AuthOnlyOnline`，本次仅跳过运行时补授权，不再错误返回退出码 `1`。程序不会结束 `NetHost.exe`、System 或任何未知端口占用进程。
+如果 `18765` 已经是有效 Automation 会直接复用；未监听时先尝试 v0.2.7 兼容启动；被普通 HTTP、非 HTTP 服务或其他程序占用，或兼容启动未通过验证时，会自动尝试 `18766`～`18770`。每次流程最多接受一次 Firestone 启动请求，备用端口只做有限 Automation 初始化，不会制造重启循环。全部候选端口都失败但 Firestone 已启动时，流程会记录 `LaunchOnlyDegraded`：网络保持 `AuthOnlyOnline`，本次仅跳过运行时补授权，不返回笼统退出码 `1`。程序不会结束 `NetHost.exe`、System 或任何未知端口占用进程。
 
 如果点击快捷方式后没有自动授权：
 

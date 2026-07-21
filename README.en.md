@@ -1,4 +1,4 @@
-# Firestone2Green
+﻿# Firestone2Green
 
 <div align="center">
 
@@ -88,7 +88,7 @@ The task runs these steps:
 1. Verifies local Firestone file integrity.
 2. Clears abnormal caches and old processes.
 3. Switches to `AuthOnlyOnline` before launching Firestone, so deck data, meta data, and tracker data can load from the network.
-4. Probes the default Automation port `18765`; if another service owns it, only `18766` through `18770` are tried in order. Firestone is then opened only with the verified standard command `OverwolfLauncher.exe -launchapp <AppId> -from-desktop`. The tool never terminates the port owner, and Automation options are never appended to the app-launch command.
+4. Probes the default Automation port `18765`. When it is free, the tool first restores the v0.2.7-compatible command `OverwolfLauncher.exe -launchapp <AppId> -from-desktop --automation 18765 --enable-automation`. If the port is occupied or that launch does not pass `pingServer` validation, only `18766` through `18770` are tried. When Firestone has not been launched yet, fallback starts the Automation runtime, immediately sends one standard launch request, and then validates `pingServer`. If the compatibility request was already accepted, fallback initializes only the runtime and does not launch Firestone again. The tool never terminates a port owner.
 5. Waits for the Firestone background window and main window authorization services to initialize.
 6. Repairs the local authorization state in both the background window and the main window.
 7. Repairs the bottom-left login avatar.
@@ -101,9 +101,9 @@ After automatic authorization succeeds, premium-gated entries in the main window
 
 ### Why can the shortcut appear to do nothing after installing Firestone from inside Overwolf?
 
-v0.2.6 appended `--automation` / `--enable-automation` to the `-launchapp` command. On some Overwolf installations that prevented Firestone from launching at all. v0.2.8 separates the two stages: it bootstraps the automation runtime first, then uses only the user-verified `OverwolfLauncher.exe -launchapp <AppId> -from-desktop` command.
+Some Overwolf builds expose Automation correctly only through the direct compatibility command used by v0.2.7. The initial v0.2.8 two-stage-only flow could therefore open Firestone without exposing the authorization endpoint. The repaired flow restores the direct path only when the requested port is free and still requires a successful standard `pingServer` response before it is accepted; otherwise it falls back to the finite two-stage candidates.
 
-An existing valid Automation service on `18765` is reused. If the port is closed, Overwolf Automation is started there. If it belongs to an ordinary HTTP, non-HTTP, or other service, the tool automatically tries `18766` through `18770`. If every candidate fails but the standard Firestone launch request is accepted, the run is recorded as `LaunchOnlyDegraded`: Firestone remains launched, networking stays in `AuthOnlyOnline`, and runtime authorization is skipped without returning exit code `1`. The tool never terminates `NetHost.exe`, System, or any unknown port owner.
+An existing valid Automation service on `18765` is reused. If the port is closed, the v0.2.7-compatible direct launch is tried first. If it is occupied or the direct launch fails validation, the tool tries only `18766` through `18770`. At most one Firestone launch request is accepted per run; fallback ports perform finite Automation initialization without creating a restart loop. If every candidate fails while Firestone was launched, the run is recorded as `LaunchOnlyDegraded`: networking stays in `AuthOnlyOnline`, runtime authorization is skipped, and the tool does not return a generic exit code `1`. It never terminates `NetHost.exe`, System, or any unknown port owner.
 
 If the shortcut does not appear to authorize automatically:
 

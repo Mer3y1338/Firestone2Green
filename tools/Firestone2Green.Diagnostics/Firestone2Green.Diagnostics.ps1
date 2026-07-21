@@ -474,12 +474,18 @@ function Get-LocalRepairScriptSnapshot {
     try { $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop } catch { $readError = $_.Exception.Message }
     $mixed = $false
     $fixed = $false
+    $hasLegacyCompatibility = $false
     if ($content) {
-      $mixed = ($content -match "(?s)standardArgs\s*=\s*@\('?-launchapp.*?--automation") -or
-               ($content -match "(?s)-launchapp.{0,220}--automation.{0,80}--enable-automation")
+      $hasMixedArguments = ($content -match "(?s)standardArgs\s*=\s*@\('?-launchapp.*?--automation") -or
+                           ($content -match "(?s)-launchapp.{0,220}--automation.{0,80}--enable-automation")
+      $hasLegacyCompatibility = ($content -match 'LegacyDirectLauncher') -and
+                                ($content -match 'StartedAutomationLegacyDirect') -and
+                                ($content -match 'legacyAutomationCompatibilityUsed') -and
+                                ($content -match 'Get-AutomationPortsToTry')
+      $mixed = $hasMixedArguments -and -not $hasLegacyCompatibility
       $fixed = ($content -match 'LaunchOnlyDegraded') -and
-               ($content -match "automationArgs\s*=\s*@\('--automation'") -and
-               ($content -match "launchArgs\s*=\s*@\('-launchapp'")
+               (($content -match "automationArgs\s*=\s*@\('--automation'") -or ($content -match "runtimeArgs\s*=\s*@\('--automation'")) -and
+               (($content -match "launchArgs\s*=\s*@\('-launchapp'") -or ($content -match "standardArgs\s*=\s*@\('-launchapp'"))
     }
     $item = [pscustomobject][ordered]@{
       path = $path
@@ -488,11 +494,12 @@ function Get-LocalRepairScriptSnapshot {
       sha256 = Get-SafeFileHash $path
       readError = $readError
       hasMixedLaunchArguments = $mixed
+      hasLegacyCompatibleAutomationLaunch = $hasLegacyCompatibility
       hasSeparatedAutomationLaunch = $fixed
     }
     $items += $item
     if ($mixed) {
-      Add-Finding -Code 'OLD_PERSISTENT_SCRIPT' -Title '本机仍在使用旧版持续修复脚本' -Cause '旧脚本把 --automation / --enable-automation 混入 Firestone 的 -launchapp 命令，部分 Overwolf 版本会直接拒绝启动 Firestone。' -Score 96 -Severity 'critical' -Blocking $true -Evidence @("旧脚本：$path",'检测到 -launchapp 与 --automation 混合参数') -Solutions @('安装包含“automation 与 Firestone 启动分离”修复的新版本（v0.2.8 或更高）。','打开新版本，先点击“移除持续修复”，再点击“安装持续修复”，确保计划任务和桌面快捷方式不再调用旧脚本。','完成后再执行一次“一键处理”。')
+      Add-Finding -Code 'OLD_PERSISTENT_SCRIPT' -Title '本机仍在使用旧版持续修复脚本' -Cause '检测到早期单一路径启动脚本：它把 --automation 参数固定在 Firestone 启动命令中，但缺少 pingServer 验证、有限备用端口和安全降级。' -Score 96 -Severity 'critical' -Blocking $true -Evidence @("旧脚本：$path",'检测到未受保护的旧式混合启动参数') -Solutions @('使用包含“旧版兼容启动 + 有限备用端口”修复的最新版。','打开新版，先点击“移除持续修复”，再点击“安装持续修复”，让计划任务和桌面快捷方式使用新脚本。','完成后再执行一次“一键处理”。')
     }
   }
   if (-not (Test-Path -LiteralPath $defaultScript -PathType Leaf)) {
@@ -610,7 +617,7 @@ function Get-ProcessAndAutomationSnapshot {
     $owners = @($listeners | ForEach-Object { "$($_.processName) PID=$($_.owningProcess)" })
     $isOverwolfOwner = @($listeners | Where-Object { $_.processName -match '(?i)overwolf|^ow-' }).Count -gt 0
     if ($isOverwolfOwner) {
-      Add-Finding -Code 'AUTOMATION_INVALID_RESPONSE' -Title '默认 Automation 端口 18765 返回无效结果' -Cause '18765 上的 Overwolf 本机接口没有返回 Firestone2Green 需要的成功 JSON；最新版会安全检查并有限尝试 18766-18770。' -Score 76 -Severity 'warning' -Evidence @($owners + $automation.error) -Solutions @('使用最新版 Firestone2Green 的“一键重启并授权”，程序会自动选择可用端口。','不要把 --automation 参数附加在 -launchapp Firestone 命令后；应由新版脚本分离启动。','如果全部候选端口仍失败，提交本诊断 JSON 和最新 FirestoneOfflineReport JSON。')
+      Add-Finding -Code 'AUTOMATION_INVALID_RESPONSE' -Title '默认 Automation 端口 18765 返回无效结果' -Cause '18765 上的 Overwolf 本机接口没有返回 Firestone2Green 需要的成功 JSON；最新版会安全检查并有限尝试 18766-18770。' -Score 76 -Severity 'warning' -Evidence @($owners + $automation.error) -Solutions @('使用最新版 Firestone2Green 的“一键重启并授权”，程序会先尝试 v0.2.7 已验证的兼容启动方式，再有限尝试备用端口。','无需手工拼接 --automation 参数，也不要反复启动 Firestone；程序会自动选择并验证本次有效端口。','如果全部候选端口仍失败，提交本诊断 JSON 和最新 FirestoneOfflineReport JSON。')
     } else {
       Add-Finding -Code 'DEFAULT_PORT_OCCUPIED_NON_AUTOMATION' -Title '默认 Automation 端口 18765 被其他程序占用' -Cause '18765 当前不是有效的 Overwolf Automation；最新版会安全跳过占用者，只按顺序尝试 18766-18770。' -Score 64 -Severity 'warning' -Blocking $false -Evidence $owners -Solutions @('直接使用最新版 Firestone2Green 的“一键重启并授权”，无需手工选择端口。','不要结束 NetHost.exe、System 或任何不认识的端口占用进程。')
     }
@@ -866,38 +873,222 @@ function Get-PersistenceSnapshot {
 function Get-ReportSnapshot {
   param([string]$PreferredPath)
   Write-DiagLog '查找并解析最新 FirestoneOfflineReport JSON...'
+
+  # Report discovery must stay bounded. Some users keep large backup trees under
+  # %LOCALAPPDATA%\Firestone2Green; an unbounded Get-ChildItem -Recurse can make
+  # the diagnostic GUI appear frozen forever.
+  $scanStarted = Get-Date
+  $maxScanMilliseconds = 6000
+  $maxDirectories = 600
+  $maxFilesInspected = 12000
+  $maxCandidateReports = 1200
+  $maxReportBytes = 8MB
+  $scan = [ordered]@{
+    scanTimedOut = $false
+    scannedDirectories = 0
+    scannedFiles = 0
+    skippedLargeFiles = 0
+    skippedReparsePoints = 0
+    accessErrors = 0
+  }
   $candidates = New-Object System.Collections.Generic.List[object]
   $seen = @{}
-  function Add-ReportFile([string]$Path,[string]$Source,[int]$Priority) {
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
-    try { $full=[IO.Path]::GetFullPath($Path) } catch { return }
-    $key=$full.ToLowerInvariant(); if($seen.ContainsKey($key)){return}; $seen[$key]=$true
-    $file=Get-Item -LiteralPath $full -ErrorAction Stop
-    $candidates.Add([pscustomobject]@{path=$full;source=$Source;priority=$Priority;lastWriteTime=$file.LastWriteTime;length=$file.Length})
+  $priorityRoots = @{}
+
+  function Test-ReportScanBudget {
+    if ([bool]$scan['scanTimedOut']) { return $false }
+    $elapsed = [int]((Get-Date) - $scanStarted).TotalMilliseconds
+    if ($elapsed -ge $maxScanMilliseconds -or [int]$scan['scannedDirectories'] -ge $maxDirectories -or [int]$scan['scannedFiles'] -ge $maxFilesInspected -or $candidates.Count -ge $maxCandidateReports) {
+      $scan['scanTimedOut'] = $true
+      return $false
+    }
+    return $true
   }
-  if ($PreferredPath) { Add-ReportFile $PreferredPath '命令行指定' 0 }
-  $localRoot=Join-Path $env:LOCALAPPDATA 'Firestone2Green'
-  if(Test-Path -LiteralPath $localRoot -PathType Container){
-    try { foreach($file in @(Get-ChildItem -LiteralPath $localRoot -Filter 'FirestoneOfflineReport_*.json' -File -Recurse -ErrorAction SilentlyContinue)){Add-ReportFile $file.FullName 'Firestone2Green 本地目录' 1} } catch {}
-  }
-  foreach($folder in @((Join-Path $env:USERPROFILE 'Downloads'),[Environment]::GetFolderPath('Desktop'))){
-    if(Test-Path -LiteralPath $folder -PathType Container){
-      try { foreach($file in @(Get-ChildItem -LiteralPath $folder -Filter 'FirestoneOfflineReport_*.json' -File -ErrorAction SilentlyContinue)){Add-ReportFile $file.FullName '下载/桌面目录' 3} } catch {}
+
+  function Add-ReportFile {
+    param([string]$Path,[string]$Source,[int]$Priority)
+    if ([string]::IsNullOrWhiteSpace($Path) -or $candidates.Count -ge $maxCandidateReports) { return }
+    try { $full = [IO.Path]::GetFullPath($Path) } catch { $scan['accessErrors'] = [int]$scan['accessErrors'] + 1; return }
+    $key = $full.ToLowerInvariant()
+    if ($seen.ContainsKey($key)) { return }
+    $seen[$key] = $true
+    try {
+      $file = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+      if ($file.PSIsContainer) { return }
+      if ([int64]$file.Length -gt [int64]$maxReportBytes) {
+        $scan['skippedLargeFiles'] = [int]$scan['skippedLargeFiles'] + 1
+        return
+      }
+      $candidates.Add([pscustomobject][ordered]@{
+        path = $full
+        source = $Source
+        priority = $Priority
+        lastWriteTime = $file.LastWriteTime
+        length = [int64]$file.Length
+      })
+    } catch {
+      $scan['accessErrors'] = [int]$scan['accessErrors'] + 1
     }
   }
-  $ordered=@($candidates | Sort-Object priority,@{Expression='lastWriteTime';Descending=$true})
-  if(-not $PreferredPath){$ordered=@($candidates | Sort-Object @{Expression='lastWriteTime';Descending=$true},priority)}
-  if($ordered.Count -eq 0){
-    return [pscustomobject][ordered]@{candidates=@();latestPath='';latest=$null;parseError='';ageDays=$null}
+
+  function Test-SkippedReportDirectory {
+    param([string]$Path)
+    try { $name = [IO.Path]::GetFileName($Path.TrimEnd('\')) } catch { return $true }
+    return ($name -like 'backup_*' -or $name -in @('Diagnostics','runtime','hosts-backups','assets'))
   }
-  $selected=$ordered[0]; $parsed=$null; $parseError=''
-  try{$parsed=Get-Content -LiteralPath $selected.path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop}catch{$parseError=$_.Exception.Message}
-  if($parseError){
+
+  function Scan-ReportTree {
+    param([string]$Root,[string]$Source,[int]$Priority,[switch]$SkipPriorityRoots,[int]$MaxDepth=4)
+    if ([string]::IsNullOrWhiteSpace($Root)) { return }
+    try {
+      $rootPath = [IO.Path]::GetFullPath($Root)
+      $rootAttributes = [IO.File]::GetAttributes($rootPath)
+      if (($rootAttributes -band [IO.FileAttributes]::Directory) -eq 0) { return }
+      if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        $scan['skippedReparsePoints'] = [int]$scan['skippedReparsePoints'] + 1
+        return
+      }
+    } catch {
+      return
+    }
+    if ($MaxDepth -lt 0) { $MaxDepth = 0 }
+    $queue = New-Object 'System.Collections.Generic.Queue[object]'
+    $queue.Enqueue([pscustomobject]@{ path = $rootPath; depth = 0 })
+    while ($queue.Count -gt 0 -and (Test-ReportScanBudget)) {
+      $queued = $queue.Dequeue()
+      $current = [string]$queued.path
+      $depth = [int]$queued.depth
+      if (Test-SkippedReportDirectory -Path $current) { continue }
+      $scan['scannedDirectories'] = [int]$scan['scannedDirectories'] + 1
+      $enumerator = $null
+      try {
+        $enumerator = [IO.Directory]::EnumerateFileSystemEntries($current).GetEnumerator()
+        while (Test-ReportScanBudget) {
+          $hasNext = $false
+          try { $hasNext = $enumerator.MoveNext() } catch { $scan['accessErrors'] = [int]$scan['accessErrors'] + 1; break }
+          if (-not $hasNext) { break }
+          $entry = [string]$enumerator.Current
+          try {
+            $entryAttributes = [IO.File]::GetAttributes($entry)
+          } catch {
+            $scan['accessErrors'] = [int]$scan['accessErrors'] + 1
+            continue
+          }
+          if (($entryAttributes -band [IO.FileAttributes]::Directory) -ne 0) {
+            if (($entryAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+              $scan['skippedReparsePoints'] = [int]$scan['skippedReparsePoints'] + 1
+              continue
+            }
+            if (Test-SkippedReportDirectory -Path $entry) { continue }
+            if ($depth -ge $MaxDepth) { continue }
+            if ($SkipPriorityRoots) {
+              try { $entryKey = [IO.Path]::GetFullPath($entry).ToLowerInvariant() } catch { $entryKey = '' }
+              if ($entryKey -and $priorityRoots.ContainsKey($entryKey)) { continue }
+            }
+            $queue.Enqueue([pscustomobject]@{ path = $entry; depth = ($depth + 1) })
+            continue
+          }
+          $scan['scannedFiles'] = [int]$scan['scannedFiles'] + 1
+          if ([IO.Path]::GetFileName($entry) -like 'FirestoneOfflineReport_*.json') {
+            Add-ReportFile -Path $entry -Source $Source -Priority $Priority
+          }
+        }
+      } catch {
+        $scan['accessErrors'] = [int]$scan['accessErrors'] + 1
+      } finally {
+        try { if ($enumerator -is [IDisposable]) { $enumerator.Dispose() } } catch {}
+      }
+    }
+  }
+
+  function Scan-ReportTopLevel {
+    param([string]$Folder,[string]$Source,[int]$Priority)
+    if ([string]::IsNullOrWhiteSpace($Folder) -or -not (Test-ReportScanBudget)) { return }
+    try {
+      $folderAttributes = [IO.File]::GetAttributes($Folder)
+      if (($folderAttributes -band [IO.FileAttributes]::Directory) -eq 0) { return }
+      if (($folderAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        $scan['skippedReparsePoints'] = [int]$scan['skippedReparsePoints'] + 1
+        return
+      }
+    } catch {
+      return
+    }
+    $scan['scannedDirectories'] = [int]$scan['scannedDirectories'] + 1
+    $enumerator = $null
+    try {
+      $enumerator = [IO.Directory]::EnumerateFiles($Folder, 'FirestoneOfflineReport_*.json', [IO.SearchOption]::TopDirectoryOnly).GetEnumerator()
+      while (Test-ReportScanBudget) {
+        $hasNext = $false
+        try { $hasNext = $enumerator.MoveNext() } catch { $scan['accessErrors'] = [int]$scan['accessErrors'] + 1; break }
+        if (-not $hasNext) { break }
+        $scan['scannedFiles'] = [int]$scan['scannedFiles'] + 1
+        Add-ReportFile -Path ([string]$enumerator.Current) -Source $Source -Priority $Priority
+      }
+    } catch {
+      $scan['accessErrors'] = [int]$scan['accessErrors'] + 1
+    } finally {
+      try { if ($enumerator -is [IDisposable]) { $enumerator.Dispose() } } catch {}
+    }
+  }
+
+  if ($PreferredPath) { Add-ReportFile -Path $PreferredPath -Source '命令行指定' -Priority 0 }
+  $localRoot = Join-Path $env:LOCALAPPDATA 'Firestone2Green'
+  $reportRoots = @(
+    (Join-Path $localRoot 'FirestoneOfflineReports'),
+    (Join-Path $localRoot 'scripts\FirestoneOfflineReports')
+  )
+  foreach ($reportRoot in $reportRoots) {
+    try { $priorityRoots[[IO.Path]::GetFullPath($reportRoot).ToLowerInvariant()] = $true } catch {}
+    Scan-ReportTree -Root $reportRoot -Source 'Firestone2Green 报告目录' -Priority 1 -MaxDepth 2
+  }
+  foreach ($folder in @((Join-Path $env:USERPROFILE 'Downloads'), [Environment]::GetFolderPath('Desktop'))) {
+    Scan-ReportTopLevel -Folder $folder -Source '下载/桌面目录' -Priority 3
+  }
+  # Known report directories and the user's download locations are enough for
+  # normal runs. Only search the broader local tree when none of them produced
+  # a candidate, and keep that fallback shallow.
+  if ($candidates.Count -eq 0 -and (Test-ReportScanBudget)) {
+    Scan-ReportTree -Root $localRoot -Source 'Firestone2Green 本地目录' -Priority 2 -SkipPriorityRoots -MaxDepth 3
+  }
+
+  $elapsedMilliseconds = [int]((Get-Date) - $scanStarted).TotalMilliseconds
+  Write-DiagLog ("报告扫描完成：目录={0}，文件={1}，候选={2}，跳过重解析点={3}，耗时={4}ms，达到限界={5}" -f $scan['scannedDirectories'],$scan['scannedFiles'],$candidates.Count,$scan['skippedReparsePoints'],$elapsedMilliseconds,$scan['scanTimedOut'])
+  if ([bool]$scan['scanTimedOut']) {
+    Add-Finding -Code 'REPORT_SCAN_LIMIT_REACHED' -Title '历史报告目录较大，已按安全限界结束扫描' -Cause '排查工具只在有限目录数、文件数和时间内查找最新报告，避免窗口无限卡住。' -Score 10 -Severity 'info' -Evidence @("扫描目录：$($scan['scannedDirectories'])","扫描文件：$($scan['scannedFiles'])","耗时：${elapsedMilliseconds}ms") -Solutions @('这不会影响主程序运行；如需分析指定报告，可把 JSON 放到桌面或下载目录后重新排查。')
+  }
+
+  $ordered = @($candidates | Sort-Object priority,@{Expression='lastWriteTime';Descending=$true})
+  if (-not $PreferredPath) { $ordered = @($candidates | Sort-Object @{Expression='lastWriteTime';Descending=$true},priority) }
+  $commonResult = [ordered]@{
+    candidates = @($ordered)
+    latestPath = ''
+    latest = $null
+    parseError = ''
+    ageDays = $null
+    scanTimedOut = [bool]$scan['scanTimedOut']
+    scannedDirectories = [int]$scan['scannedDirectories']
+    scannedFiles = [int]$scan['scannedFiles']
+    skippedLargeFiles = [int]$scan['skippedLargeFiles']
+    skippedReparsePoints = [int]$scan['skippedReparsePoints']
+    accessErrors = [int]$scan['accessErrors']
+    scanElapsedMilliseconds = $elapsedMilliseconds
+  }
+  if ($ordered.Count -eq 0) { return [pscustomobject]$commonResult }
+
+  $selected = $ordered[0]
+  $parsed = $null
+  $parseError = ''
+  try { $parsed = Get-Content -LiteralPath $selected.path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop } catch { $parseError = $_.Exception.Message }
+  if ($parseError) {
     Add-Finding -Code 'LATEST_REPORT_INVALID_JSON' -Title '最新运行报告不是有效 JSON' -Cause '报告写入中断、文件被截断，或文本编码/内容被其他程序改写。' -Score 49 -Severity 'warning' -Evidence @("报告：$($selected.path)","错误：$parseError") -Solutions @('重新执行一次操作并等待日志显示“完成”后再排查。','不要用记事本覆盖原报告；直接发送新生成的 JSON。')
   }
-  return [pscustomobject][ordered]@{candidates=@($ordered);latestPath=$selected.path;latest=$parsed;parseError=$parseError;ageDays=[Math]::Round(((Get-Date)-$selected.lastWriteTime).TotalDays,2)}
+  $commonResult['latestPath'] = $selected.path
+  $commonResult['latest'] = $parsed
+  $commonResult['parseError'] = $parseError
+  $commonResult['ageDays'] = [Math]::Round(((Get-Date) - $selected.lastWriteTime).TotalDays,2)
+  return [pscustomobject]$commonResult
 }
-
 function Apply-ReportDiagnoses {
   param($Reports,$Processes)
   $report=$Reports.latest
@@ -909,12 +1100,23 @@ function Apply-ReportDiagnoses {
   $launchAttempts=@(Get-ObjectProperty $report 'launchAttempts' @())
   $launchResult=[string](Get-ObjectProperty $report 'launchResult' '')
   $automationAvailable=Get-ObjectProperty $report 'automationAvailable' $null
+  $selectedLaunchMode=[string](Get-ObjectProperty $report 'selectedLaunchMode' '')
+  $legacyCompatibilityUsed=[bool](Get-ObjectProperty $report 'legacyAutomationCompatibilityUsed' $false)
+  $automationLaunchResult=[string](Get-ObjectProperty $report 'automationLaunchResult' '')
+  $controlledLegacyLaunch = $legacyCompatibilityUsed -or
+    ($selectedLaunchMode -match '(?i)LegacyDirectLauncher') -or
+    ($automationLaunchResult -match '(?i)StartedAutomationLegacyDirect')
   $mixedAttempts=@($launchAttempts | Where-Object {
-    $args=[string](Get-ObjectProperty $_ 'args' '')
-    $args -match '(?i)-launchapp\s+' -and $args -match '(?i)--automation' -and $args -match '(?i)--enable-automation'
+    $argsText=[string](Get-ObjectProperty $_ 'args' '')
+    if ([string]::IsNullOrWhiteSpace($argsText)) { $argsText=[string](Get-ObjectProperty $_ 'arguments' '') }
+    $description=[string](Get-ObjectProperty $_ 'description' '')
+    $isControlledLegacy = $description -match '(?i)旧版兼容|LegacyDirect|兼容参数启动 Firestone \+ Automation' -or
+      $selectedLaunchMode -match '(?i)LegacyDirectLauncher'
+    if ($isControlledLegacy -or $controlledLegacyLaunch) { return $false }
+    return ($argsText -match '(?i)-launchapp\s+' -and $argsText -match '(?i)--automation' -and $argsText -match '(?i)--enable-automation')
   })
-  if($mixedAttempts.Count -gt 0){
-    Add-Finding -Code 'AUTOMATION_MIXED_LAUNCH_ARGUMENTS' -Title '旧版把 automation 参数混入 Firestone 启动命令' -Cause 'Overwolf 的 automation 参数属于客户端 runtime，不应与 -launchapp Firestone 参数混在同一次启动命令中；部分安装会因此完全不启动 Firestone。' -Score 100 -Severity 'critical' -Blocking $true -Evidence @(("最新报告：{0}" -f $Reports.latestPath),@($mixedAttempts | ForEach-Object {"启动器：$(Get-ObjectProperty $_ 'launcher' '')；参数：$(Get-ObjectProperty $_ 'args' '')"}),$(if($error){"原错误：$error"}else{''})) -Solutions @('安装 v0.2.8 或更高版本。','已安装持续修复时，新版“一键处理”会自动刷新旧监听器，无需手工移除后重装。','再执行“一键处理”；新的报告中 Firestone args 应只有 -launchapp <AppId> -from-desktop。')
+  if($mixedAttempts.Count -gt 0 -and -not $controlledLegacyLaunch){
+    Add-Finding -Code 'AUTOMATION_MIXED_LAUNCH_ARGUMENTS' -Title '旧版把 automation 参数混入 Firestone 启动命令' -Cause '检测到未受控的旧式混合启动：把 --automation 固定绑在 -launchapp 上，且缺少 pingServer 验证与有限备用端口。v0.2.8 仅在默认端口空闲时把该兼容路径作为受控首选，并在验证失败后继续有限回退。' -Score 100 -Severity 'critical' -Blocking $true -Evidence @(("最新报告：{0}" -f $Reports.latestPath),@($mixedAttempts | ForEach-Object {"启动器：$(Get-ObjectProperty $_ 'launcher' '');参数：$(([string](Get-ObjectProperty $_ 'args' '')) + ([string](Get-ObjectProperty $_ 'arguments' '')))"}),$(if($error){"原错误：$error"}else{''})) -Solutions @('安装包含“兼容启动 + 有限备用端口”修复的最新版。','已安装持续修复时，新版“一键处理”会自动刷新旧监听器。','再执行“一键处理”；报告中应出现 effectiveAutomationPort，或至少为 LaunchOnlyDegraded 而非致命退出。')
   }
   if($error -match '(?i)HOSTS_(WRITE_VERIFY_FAILED|PROTECTION_ACTIVE|FILE_BUSY|CREATE_FAILED)|hosts 写入后校验失败|hosts 更新失败'){
     # Final classification depends on the current hosts/firewall snapshot.

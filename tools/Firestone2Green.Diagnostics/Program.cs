@@ -259,6 +259,7 @@ namespace Firestone2Green.Diagnostics
                 info.StandardOutputEncoding = Encoding.UTF8;
                 info.StandardErrorEncoding = Encoding.UTF8;
 
+                bool timedOut = false;
                 using (Process process = new Process())
                 {
                     process.StartInfo = info;
@@ -273,14 +274,36 @@ namespace Firestone2Green.Diagnostics
                     process.Start();
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
-                    process.WaitForExit();
-                    result.ExitCode = process.ExitCode;
+                    if (!process.WaitForExit(120000))
+                    {
+                        timedOut = true;
+                        try
+                        {
+                            if (!process.HasExited) process.Kill();
+                        }
+                        catch
+                        {
+                        }
+                        try
+                        {
+                            process.WaitForExit(5000);
+                        }
+                        catch
+                        {
+                        }
+                        result.ExitCode = -2;
+                        result.Error = "诊断脚本超过 120 秒仍未完成，已停止本次诊断。请重新运行排查；程序不会结束 Overwolf、Firestone 或其他进程。";
+                    }
+                    else
+                    {
+                        process.WaitForExit();
+                        result.ExitCode = process.ExitCode;
+                    }
                 }
-
                 result.TextPath = Path.Combine(currentOutputDirectory, "Firestone2Green_Diagnostic_" + currentRunId + ".txt");
                 result.JsonPath = Path.Combine(currentOutputDirectory, "Firestone2Green_Diagnostic_" + currentRunId + ".json");
                 if (File.Exists(result.TextPath)) result.ReportText = File.ReadAllText(result.TextPath, Encoding.UTF8);
-                if (string.IsNullOrWhiteSpace(result.ReportText))
+                if (!timedOut && string.IsNullOrWhiteSpace(result.ReportText))
                 {
                     result.Error = "排查进程结束，但没有生成文本报告。请使用“管理员重新排查”。";
                 }
