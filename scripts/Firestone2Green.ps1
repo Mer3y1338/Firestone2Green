@@ -12,7 +12,9 @@ Purpose:
   - generate a JSON report
   - optionally install a scheduled task so the shield is re-applied after updates/logon
 
-No internet access is used by this script.
+This script never downloads or executes remote code. When hosts is protected and
+dynamic FQDN firewall rules are unavailable, it may resolve only the exact target
+domains through the system DNS resolver to build a local firewall fallback.
 #>
 
 [CmdletBinding()]
@@ -38,6 +40,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Automation port selection is intentionally finite and per-run. The historical
+# default remains 18765; only the documented five fallback ports are considered.
+$Script:DefaultAutomationPort = 18765
+$Script:AutomationFallbackPorts = @(18766, 18767, 18768, 18769, 18770)
 
 # Force UTF-8 for redirected PowerShell output so the WinForms log does not show mojibake.
 try {
@@ -659,7 +666,7 @@ function Get-HostsProtectionHint {
 function Get-HostsProtectionFailureMessage {
   param([string]$HostsPath)
   $hint = Get-HostsProtectionHint
-  return "HOSTS_PROTECTION_ACTIVE: hosts 被安全软件或系统策略实时保护：$HostsPath。工具已自动尝试管理员权限、解除只读和临时修复 ACL，但仍无法写入。$hint 请在安全软件中关闭【Hosts 保护/系统文件防护】，或允许 Firestone2Green.exe 和 powershell.exe 修改 hosts，然后回到工具重新点击一次。无需联系作者。"
+  return "HOSTS_PROTECTION_ACTIVE: hosts 被安全软件或系统策略实时保护：$HostsPath。工具已自动尝试管理员权限、解除只读和临时修复 ACL，但仍无法写入。$hint 程序将自动改用不依赖 hosts 的精确域名防火墙方案。"
 }
 
 function Get-HostsBaseException {
@@ -852,7 +859,7 @@ function Initialize-WindowsHostsFile {
   } catch {
     $exception = Get-HostsBaseException -ErrorObject $_
     if ($exception -is [System.IO.IOException] -and -not ($exception -is [System.UnauthorizedAccessException])) {
-      throw "HOSTS_FILE_BUSY: 无法创建 hosts，hosts.txt 或目标目录可能正被其他程序占用：$HostsPath。请关闭 Hosts 编辑器、加速器和安全软件的 Hosts 管理页面后重试；无需联系作者。"
+      throw "HOSTS_FILE_BUSY: 无法创建 hosts，hosts.txt 或目标目录可能正被其他程序占用：$HostsPath。程序将自动尝试不依赖 hosts 的精确域名防火墙方案。"
     }
     throw "HOSTS_CREATE_FAILED: 系统缺少 hosts，但无法在 $directory 创建无扩展名文件。请保持管理员运行，并在安全软件中允许 Firestone2Green.exe 和 powershell.exe 修改 hosts，然后重试。无需联系作者。"
   }
@@ -1076,7 +1083,7 @@ function Set-HostsBlock {
           $verifiedText.IndexOf($begin, [StringComparison]::Ordinal) -lt 0 -or
           $verifiedText.IndexOf($end, [StringComparison]::Ordinal) -lt 0) {
         $hint = Get-HostsProtectionHint
-        throw "HOSTS_WRITE_VERIFY_FAILED: hosts 写入后校验失败，文件可能被安全软件立即还原：$resolvedHostsPath。$hint 请关闭【Hosts 保护/系统文件防护】或加入允许列表后重试；无需联系作者。"
+        throw "HOSTS_WRITE_VERIFY_FAILED: hosts 写入后校验失败，文件可能被安全软件立即还原：$resolvedHostsPath。$hint 程序将自动回滚并改用精确域名防火墙方案。"
       }
     }
 
@@ -1113,6 +1120,331 @@ function Set-HostsBlock {
   if ($null -ne $result) { $result.aclRestored = [bool]$aclRestored }
   return $result
 }
+function Get-FirestoneExactDomainFirewallGroup {
+  return 'Firestone2Green Exact Domain Block'
+}
+
+function Get-NormalizedDomainBlockHosts {
+  param([string[]]$Hosts)
+  $validHosts = New-Object System.Collections.Generic.List[string]
+  foreach ($hostEntry in @($Hosts | Sort-Object -Unique)) {
+    if ($null -eq $hostEntry) { continue }
+    $hostName = ([string]$hostEntry).Trim().ToLowerInvariant()
+    if ($hostName -match '^[a-z0-9.-]+$' -and -not $validHosts.Contains($hostName)) {
+      $validHosts.Add($hostName)
+    }
+  }
+  return $validHosts.ToArray()
+}
+
+function Get-FirestoneDomainKeywordId {
+  param([Parameter(Mandatory=$true)][string]$HostName)
+  $normalized = $HostName.Trim().ToLowerInvariant()
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $source = [System.Text.Encoding]::UTF8.GetBytes("Firestone2Green|$normalized")
+    $hash = $sha256.ComputeHash($source)
+    $guidBytes = New-Object byte[] 16
+    [Array]::Copy($hash, $guidBytes, 16)
+    return ([guid]::new($guidBytes)).ToString('B')
+  } finally {
+    $sha256.Dispose()
+  }
+}
+
+function Remove-FirestoneDomainFirewallFallback {
+  $group = Get-FirestoneExactDomainFirewallGroup
+  $rules = @(Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue)
+  if ($rules.Count -gt 0) {
+    $rules | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+  }
+
+  $removedKeywordIds = New-Object System.Collections.Generic.List[string]
+  if ((Get-Command Get-NetFirewallDynamicKeywordAddress -ErrorAction SilentlyContinue) -and
+      (Get-Command Remove-NetFirewallDynamicKeywordAddress -ErrorAction SilentlyContinue)) {
+    try {
+      foreach ($entry in @(Get-NetFirewallDynamicKeywordAddress -All -ErrorAction SilentlyContinue)) {
+        $keyword = [string]$entry.Keyword
+        $id = [string]$entry.Id
+        if ([string]::IsNullOrWhiteSpace($keyword) -or [string]::IsNullOrWhiteSpace($id)) { continue }
+        if ($id -ieq (Get-FirestoneDomainKeywordId -HostName $keyword)) {
+          Remove-NetFirewallDynamicKeywordAddress -Id $id -ErrorAction SilentlyContinue
+          $removedKeywordIds.Add($id)
+        }
+      }
+    } catch {
+      Write-Warning "清理旧的精确域名动态防火墙地址失败，将在重建规则时继续处理：$($_.Exception.Message)"
+    }
+  }
+
+  return [pscustomobject]@{
+    group = $group
+    rulesRemoved = $rules.Count
+    dynamicKeywordsRemoved = $removedKeywordIds.Count
+  }
+}
+
+function Resolve-FirestoneDomainAddresses {
+  param([Parameter(Mandatory=$true)][string[]]$Hosts)
+  $addresses = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
+  $failures = New-Object System.Collections.Generic.List[string]
+  foreach ($hostName in (Get-NormalizedDomainBlockHosts -Hosts $Hosts)) {
+    try {
+      foreach ($address in @([System.Net.Dns]::GetHostAddresses($hostName))) {
+        if ($null -eq $address) { continue }
+        $value = $address.IPAddressToString
+        if (-not [string]::IsNullOrWhiteSpace($value) -and
+            $value -notin @('0.0.0.0','127.0.0.1','::','::1')) {
+          [void]$addresses.Add($value)
+        }
+      }
+    } catch {
+      $failures.Add("$hostName`: $($_.Exception.Message)")
+    }
+  }
+  return [pscustomobject]@{
+    addresses = @($addresses | Sort-Object)
+    failures = $failures.ToArray()
+  }
+}
+
+function Set-FirestoneDomainFirewallFallback {
+  param(
+    [Parameter(Mandatory=$true)][string[]]$Hosts,
+    [Parameter(Mandatory=$true)][ValidateSet('DataOnline','AuthOnlyOnline')][string]$NetworkMode
+  )
+  Assert-Admin '创建精确域名防火墙备用规则'
+  $validHosts = @(Get-NormalizedDomainBlockHosts -Hosts $Hosts)
+  if ($validHosts.Count -eq 0) { throw '没有可用于防火墙备用规则的有效域名。' }
+
+  $roots = @(Get-OverwolfExecutableRoots -OverwolfRoot $OverwolfRoot -CommonOverwolfRoot $CommonOverwolfRoot)
+  $exes = @(Get-OverwolfExecutables -Roots $roots)
+  if ($exes.Count -eq 0) { throw '未找到可用于精确域名防火墙规则的 Overwolf/Firestone EXE。' }
+
+  $group = Get-FirestoneExactDomainFirewallGroup
+  $cleanup = Remove-FirestoneDomainFirewallFallback
+  $dynamicError = ''
+  $newRuleCommand = Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue
+  $supportsDynamic = (
+    (Get-Command New-NetFirewallDynamicKeywordAddress -ErrorAction SilentlyContinue) -and
+    (Get-Command Get-NetFirewallDynamicKeywordAddress -ErrorAction SilentlyContinue) -and
+    (Get-Command Remove-NetFirewallDynamicKeywordAddress -ErrorAction SilentlyContinue) -and
+    $null -ne $newRuleCommand -and
+    $newRuleCommand.Parameters.ContainsKey('RemoteDynamicKeywordAddresses')
+  )
+
+  if ($supportsDynamic) {
+    try {
+      $keywordIds = New-Object System.Collections.Generic.List[string]
+      foreach ($hostName in $validHosts) {
+        $id = Get-FirestoneDomainKeywordId -HostName $hostName
+        Remove-NetFirewallDynamicKeywordAddress -Id $id -ErrorAction SilentlyContinue
+        New-NetFirewallDynamicKeywordAddress -Id $id -Keyword $hostName -AutoResolve $true -ErrorAction Stop | Out-Null
+        $keywordIds.Add($id)
+      }
+
+      $createdPrograms = New-Object System.Collections.Generic.List[string]
+      foreach ($exe in $exes) {
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+        $name = "Firestone2Green $NetworkMode Domain - $(Split-Path -Leaf $exe) - $([guid]::NewGuid().ToString('N').Substring(0,8))"
+        New-NetFirewallRule -DisplayName $name -Group $group -Description "Firestone2Green $NetworkMode exact-domain fallback" -Direction Outbound -Action Block -Program $exe -RemoteDynamicKeywordAddresses $keywordIds.ToArray() -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+        $createdPrograms.Add($exe)
+      }
+      if ($createdPrograms.Count -eq 0) { throw '没有成功创建任何程序级动态域名防火墙规则。' }
+
+      return [pscustomobject]@{
+        method = 'DynamicFqdnFirewall'
+        group = $group
+        networkMode = $NetworkMode
+        hosts = $validHosts
+        addresses = @()
+        programs = $createdPrograms.ToArray()
+        ruleCount = $createdPrograms.Count
+        cleanup = $cleanup
+        dynamicError = ''
+      }
+    } catch {
+      $dynamicError = $_.Exception.Message
+      Write-Warning "动态域名防火墙不可用，正在自动改用解析后的 IP 规则：$dynamicError"
+      Remove-FirestoneDomainFirewallFallback | Out-Null
+    }
+  } else {
+    $dynamicError = '当前系统缺少动态域名防火墙命令或 RemoteDynamicKeywordAddresses 参数。'
+    Write-Host '当前系统不支持动态域名防火墙，正在自动改用解析后的 IP 规则。'
+  }
+
+  $resolution = Resolve-FirestoneDomainAddresses -Hosts $validHosts
+  if ($resolution.addresses.Count -eq 0) {
+    $detail = if ($resolution.failures.Count -gt 0) { $resolution.failures -join '; ' } else { 'DNS 未返回地址。' }
+    throw "精确域名防火墙备用规则创建失败：$detail"
+  }
+
+  try {
+    $createdPrograms = New-Object System.Collections.Generic.List[string]
+    foreach ($exe in $exes) {
+      if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+      $name = "Firestone2Green $NetworkMode Domain IP - $(Split-Path -Leaf $exe) - $([guid]::NewGuid().ToString('N').Substring(0,8))"
+      New-NetFirewallRule -DisplayName $name -Group $group -Description "Firestone2Green $NetworkMode resolved-IP fallback" -Direction Outbound -Action Block -Program $exe -RemoteAddress @($resolution.addresses) -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+      $createdPrograms.Add($exe)
+    }
+    if ($createdPrograms.Count -eq 0) { throw '没有成功创建任何程序级 IP 防火墙规则。' }
+
+    return [pscustomobject]@{
+      method = 'ResolvedIpFirewall'
+      group = $group
+      networkMode = $NetworkMode
+      hosts = $validHosts
+      addresses = @($resolution.addresses)
+      programs = $createdPrograms.ToArray()
+      ruleCount = $createdPrograms.Count
+      cleanup = $cleanup
+      dynamicError = $dynamicError
+      dnsFailures = @($resolution.failures)
+    }
+  } catch {
+    Remove-FirestoneDomainFirewallFallback | Out-Null
+    throw
+  }
+}
+
+function Set-ExactDomainBlockResilient {
+  param(
+    [Parameter(Mandatory=$true)][System.Collections.IDictionary]$State,
+    [Parameter(Mandatory=$true)][string[]]$Hosts,
+    [Parameter(Mandatory=$true)][ValidateSet('StrictOffline','DataOnline','AuthOnlyOnline')][string]$NetworkMode,
+    [switch]$BroadProgramFirewallActive
+  )
+  $validHosts = @(Get-NormalizedDomainBlockHosts -Hosts $Hosts)
+
+  # A successful firewall fallback is deliberately reused. This avoids making
+  # protected machines trigger the same hosts write/rollback on every launch,
+  # while Test-FirewallCoverage still forces a rebuild after Overwolf adds EXEs.
+  if (-not $BroadProgramFirewallActive -and $NetworkMode -in @('DataOnline','AuthOnlyOnline')) {
+    try {
+      $group = Get-FirestoneExactDomainFirewallGroup
+      $existingRules = @(Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue)
+      $matchingRules = @($existingRules | Where-Object {
+        ([string]$_.DisplayName) -like "Firestone2Green $NetworkMode Domain*" -and
+        ([string]$_.Enabled) -ne 'False'
+      })
+      if ($matchingRules.Count -gt 0) {
+        $roots = @(Get-OverwolfExecutableRoots -OverwolfRoot $OverwolfRoot -CommonOverwolfRoot $CommonOverwolfRoot)
+        $exes = @(Get-OverwolfExecutables -Roots $roots)
+        $coverage = Test-FirewallCoverage -Group $group -ExePaths $exes
+        if ($exes.Count -gt 0 -and $coverage.covered) {
+          $method = if (@($matchingRules | Where-Object { ([string]$_.DisplayName) -like '* Domain IP -*' }).Count -gt 0) {
+            'ResolvedIpFirewall'
+          } else {
+            'DynamicFqdnFirewall'
+          }
+          $firewall = [pscustomobject]@{
+            method = $method
+            group = $group
+            networkMode = $NetworkMode
+            hosts = $validHosts
+            programs = @($coverage.programs)
+            ruleCount = $matchingRules.Count
+            reused = $true
+          }
+          Set-State $State 'hostsMaintenance' $null
+          Set-State $State 'hostsWriteSkippedReason' 'ExistingDomainFirewallFallback'
+          Set-State $State 'domainFirewall' $firewall
+          Set-State $State 'domainFirewallError' ''
+          Set-State $State 'domainBlockMethod' $method
+          Set-State $State 'networkProtectionDegraded' ([bool]($method -eq 'ResolvedIpFirewall'))
+          Write-Host "检测到完整的 $NetworkMode 防火墙备用规则，已直接复用，不再重复写入受保护的 hosts。"
+          return [pscustomobject]@{
+            method = $method
+            degraded = [bool]($method -eq 'ResolvedIpFirewall')
+            hosts = $null
+            firewall = $firewall
+            hostsError = ''
+            reused = $true
+          }
+        }
+      }
+    } catch {
+      Write-Warning "检查现有精确域名防火墙规则失败，将继续按标准顺序修复：$($_.Exception.Message)"
+    }
+  }
+
+  try {
+    $hostsMaintenance = Set-HostsBlock -Hosts $validHosts
+    $fallbackCleanup = Remove-FirestoneDomainFirewallFallback
+    Set-State $State 'hostsMaintenance' $hostsMaintenance
+    Set-State $State 'hostsWriteError' ''
+    Set-State $State 'domainFirewall' $null
+    Set-State $State 'domainFirewallError' ''
+    Set-State $State 'domainBlockMethod' 'Hosts'
+    Set-State $State 'networkProtectionDegraded' $false
+    Set-State $State 'domainFallbackCleanup' $fallbackCleanup
+    return [pscustomobject]@{
+      method = 'Hosts'
+      degraded = $false
+      hosts = $hostsMaintenance
+      firewall = $null
+      hostsError = ''
+    }
+  } catch {
+    $hostsError = $_.Exception.Message
+    Set-State $State 'hostsWriteError' $hostsError
+    Write-Warning 'hosts 被权限或安全软件实时保护，已停止重复写入并自动选择不依赖 hosts 的方案。'
+
+    if ($BroadProgramFirewallActive) {
+      Set-State $State 'domainFirewall' $null
+      Set-State $State 'domainBlockMethod' 'ProgramFirewallOnly'
+      Set-State $State 'networkProtectionDegraded' $false
+      Write-Host '程序级全断网规则已经生效，hosts 失败不会中断本次修复。'
+      return [pscustomobject]@{
+        method = 'ProgramFirewallOnly'
+        degraded = $false
+        hosts = $null
+        firewall = $null
+        hostsError = $hostsError
+      }
+    }
+
+    try {
+      $firewall = Set-FirestoneDomainFirewallFallback -Hosts $validHosts -NetworkMode $NetworkMode
+      $isStaticFallback = ($firewall.method -eq 'ResolvedIpFirewall')
+      Set-State $State 'hostsMaintenance' $null
+      Set-State $State 'domainFirewall' $firewall
+      Set-State $State 'domainFirewallError' ''
+      Set-State $State 'domainBlockMethod' $firewall.method
+      Set-State $State 'networkProtectionDegraded' ([bool]$isStaticFallback)
+      if ($firewall.method -eq 'DynamicFqdnFirewall') {
+        Write-Host 'hosts 被保护，已自动切换到 Windows 防火墙精确域名阻断；无需关闭火绒，也无需联系作者。'
+      } else {
+        Write-Host '已自动使用解析后的 IP 创建精确阻断；持续修复会在后续运行时刷新规则。'
+      }
+      return [pscustomobject]@{
+        method = $firewall.method
+        degraded = [bool]$isStaticFallback
+        hosts = $null
+        firewall = $firewall
+        hostsError = $hostsError
+      }
+    } catch {
+      $firewallError = $_.Exception.Message
+      Set-State $State 'hostsMaintenance' $null
+      Set-State $State 'domainFirewall' $null
+      Set-State $State 'domainFirewallError' $firewallError
+      Set-State $State 'domainBlockMethod' 'UnprotectedRuntime'
+      Set-State $State 'networkProtectionDegraded' $true
+      Write-Warning '系统同时阻止了 hosts 和防火墙修改；本次仍会继续启动和本地授权，但精确端点阻断未生效。'
+      Write-Warning "备用防火墙失败详情已写入报告：$firewallError"
+      return [pscustomobject]@{
+        method = 'UnprotectedRuntime'
+        degraded = $true
+        hosts = $null
+        firewall = $null
+        hostsError = $hostsError
+        firewallError = $firewallError
+      }
+    }
+  }
+}
+
 function Get-DataOnlineBlockedHosts {
   param([string[]]$Hosts)
   # DataOnline allows Firestone static game/card/i18n data while keeping known
@@ -1189,8 +1521,7 @@ function Set-DataOnlineNetwork {
   }
   $allHosts = Get-RemoteHostsFromLocalApp -VersionRoot $versionRoot
   $blockedHosts = Get-DataOnlineBlockedHosts -Hosts $allHosts
-  $hostsMaintenance = Set-HostsBlock -Hosts $blockedHosts
-  Set-State $State 'hostsMaintenance' $hostsMaintenance
+  $domainBlock = Set-ExactDomainBlockResilient -State $State -Hosts $blockedHosts -NetworkMode 'DataOnline'
   try { ipconfig /flushdns | Out-Null } catch {}
 
   Set-State $State 'networkMode' 'DataOnline'
@@ -1200,7 +1531,7 @@ function Set-DataOnlineNetwork {
   Set-State $State 'hostsBlocked' $blockedHosts
   Set-State $State 'hostsAllowedForData' @('static.firestoneapp.com','static.zerotoheroes.com')
   Set-State $State 'firewallProgramBlockRemoved' $true
-  Write-Host "DataOnline 已启用：阻断 $($blockedHosts.Count) 个风险域名，放行 Firestone 静态数据源。"
+  Write-Host "DataOnline 已启用：阻断 $($blockedHosts.Count) 个风险域名，放行 Firestone 静态数据源；域名阻断方式：$($domainBlock.method)。"
 }
 
 function Set-AuthOnlyOnlineNetwork {
@@ -1228,8 +1559,7 @@ function Set-AuthOnlyOnlineNetwork {
   $authReportHosts = @(
     '73ybnsv6auhl6x2hv5tvdoppcq0oecmq.lambda-url.us-west-2.on.aws'
   )
-  $hostsMaintenance = Set-HostsBlock -Hosts $authReportHosts
-  Set-State $State 'hostsMaintenance' $hostsMaintenance
+  $domainBlock = Set-ExactDomainBlockResilient -State $State -Hosts $authReportHosts -NetworkMode 'AuthOnlyOnline'
   try { ipconfig /flushdns | Out-Null } catch {}
 
   Set-State $State 'networkMode' 'AuthOnlyOnline'
@@ -1237,7 +1567,7 @@ function Set-AuthOnlyOnlineNetwork {
   Set-State $State 'integrity' $integrity
   Set-State $State 'hostsBlocked' $authReportHosts
   Set-State $State 'firewallProgramBlockRemoved' $true
-  Write-Host 'AuthOnlyOnline 已启用：全部功能网络恢复，仅阻断会员绕过上报专用端点。'
+  Write-Host "AuthOnlyOnline 已启用：全部功能网络恢复，仅保留精确端点保护；域名阻断方式：$($domainBlock.method)。"
 }
 
 function Quarantine-Path {
@@ -1414,30 +1744,92 @@ sh.Run "powershell.exe $escapedArgs", 0, False
   $vbs | Set-Content -LiteralPath $Path -Encoding Unicode
 }
 
-function Stop-WatchFirestoneProcesses {
-  param([string]$Reason = '清理旧版可见监听进程')
+function Stop-FirestoneAutomationProcesses {
+  param(
+    [string[]]$Modes = @('WatchFirestone','AutoAuth'),
+    [string]$Reason = '刷新 Firestone2Green 监听器'
+  )
+  $stoppedProcessIds = @()
   try {
     $currentProcessId = [System.Diagnostics.Process]::GetCurrentProcess().Id
-    $watchers = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    $modeNames = @($Modes | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [regex]::Escape($_) })
+    if ($modeNames.Count -eq 0) { return @() }
+    $modePattern = '(?i)(?:^|\s)-Mode\s+["'']?(?:' + ($modeNames -join '|') + ')["'']?(?=\s|$)'
+    $scriptPattern = '(?i)(?:^|\s)-File\s+(?:"[^"]*Firestone2Green\.ps1"|[^\s"]*Firestone2Green\.ps1)(?=\s|$)'
+    $watchers = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
+        $commandLine = [string]$_.CommandLine
         ($_.Name -in @('powershell.exe', 'pwsh.exe')) -and
-        $_.CommandLine -like '*Firestone2Green.ps1*' -and
-        $_.CommandLine -like '*-Mode WatchFirestone*' -and
-        $_.ProcessId -ne $currentProcessId
-      }
+        $_.ProcessId -ne $currentProcessId -and
+        $commandLine -match $scriptPattern -and
+        $commandLine -match $modePattern
+      })
     foreach ($watcher in $watchers) {
       try {
         Stop-Process -Id $watcher.ProcessId -Force -ErrorAction Stop
-        Write-Host "$Reason：已结束 PID $($watcher.ProcessId)"
+        $stoppedProcessIds += [int]$watcher.ProcessId
+        Write-Host "$Reason：已结束 Firestone2Green 自身监听进程 PID $($watcher.ProcessId)"
       } catch {
-        Write-Warning "$Reason：结束 PID $($watcher.ProcessId) 失败：$($_.Exception.Message)"
+        Write-Warning "$Reason：结束 Firestone2Green 自身监听进程 PID $($watcher.ProcessId) 失败：$($_.Exception.Message)"
       }
     }
   } catch {
     Write-Warning "$Reason 失败：$($_.Exception.Message)"
   }
+  return @($stoppedProcessIds)
 }
 
+function Stop-WatchFirestoneProcesses {
+  param([string]$Reason = '清理旧版可见监听进程')
+  [void](Stop-FirestoneAutomationProcesses -Modes @('WatchFirestone') -Reason $Reason)
+}
+
+function Stop-LegacyAutoAuthProcesses {
+  param([string]$Reason = '升级 Firestone2Green 持续修复监听器')
+  return @(Stop-FirestoneAutomationProcesses -Modes @('WatchFirestone','AutoAuth') -Reason $Reason)
+}
+
+function Get-InstalledFirestoneAutomationTaskMode {
+  param([string]$TaskName)
+  try {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) { return $null }
+
+    $expectedWatchVbs = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Firestone2Green\WatchFirestone2Green.vbs'
+    foreach ($action in @($task.Actions)) {
+      $execute = [string]$action.Execute
+      $arguments = [string]$action.Arguments
+      $executeName = try { [IO.Path]::GetFileName($execute) } catch { $execute }
+      $combined = "$execute $arguments"
+
+      if ($executeName -in @('powershell.exe','pwsh.exe')) {
+        $modeMatch = [regex]::Match($combined, '(?i)(?:^|\s)-Mode\s+["'']?(WatchFirestone|AutoAuth)["'']?(?=\s|$)')
+        if ($combined -match '(?i)Firestone2Green\.ps1' -and $modeMatch.Success) {
+          return $modeMatch.Groups[1].Value
+        }
+      }
+
+      if ($executeName -in @('wscript.exe','cscript.exe')) {
+        $expandedArguments = [Environment]::ExpandEnvironmentVariables($arguments).Trim().Trim('"')
+        if ([string]::Equals($expandedArguments, $expectedWatchVbs, [StringComparison]::OrdinalIgnoreCase)) {
+          return 'WatchFirestone'
+        }
+        if (Test-Path -LiteralPath $expandedArguments -PathType Leaf) {
+          try {
+            $vbsText = Get-Content -LiteralPath $expandedArguments -Raw -ErrorAction Stop
+            $modeMatch = [regex]::Match($vbsText, '(?i)(?:^|\s)-Mode\s+["'']?(WatchFirestone|AutoAuth)["'']?(?=\s|$)')
+            if ($vbsText -match '(?i)Firestone2Green\.ps1' -and $modeMatch.Success) {
+              return $modeMatch.Groups[1].Value
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {
+    Write-Warning "检查已安装的 Firestone2Green 监听任务失败：$($_.Exception.Message)"
+  }
+  return $null
+}
 function Install-ShieldTask {
   param(
     [string]$TaskName,
@@ -1473,6 +1865,48 @@ function Install-ShieldTask {
   }
 }
 
+function Refresh-InstalledFirestoneWatchTask {
+  param(
+    [System.Collections.IDictionary]$State,
+    [string]$TaskName
+  )
+  $installedMode = Get-InstalledFirestoneAutomationTaskMode -TaskName $TaskName
+  Set-State $State 'installedAutomationTaskModeBefore' $installedMode
+  if ([string]::IsNullOrWhiteSpace($installedMode)) {
+    Set-State $State 'watchTaskRefreshResult' 'NotInstalledOrUnrecognized'
+    return $false
+  }
+
+  Set-State $State 'watchTaskRefreshAttempted' $true
+  Write-Step "刷新已安装的 Firestone2Green 持续修复监听器（旧模式：$installedMode）"
+  try {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    $wasRunning = ($task.State -eq 'Running')
+    Set-State $State 'watchTaskWasRunningBeforeRefresh' $wasRunning
+    if ($wasRunning) {
+      Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+      $deadline = (Get-Date).AddSeconds(8)
+      do {
+        Start-Sleep -Milliseconds 250
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+      } while ($task.State -eq 'Running' -and (Get-Date) -lt $deadline)
+    }
+
+    $stoppedProcessIds = @(Stop-LegacyAutoAuthProcesses -Reason '刷新持续修复监听器')
+    Set-State $State 'stoppedLegacyAutomationProcessIds' $stoppedProcessIds
+    Install-ShieldTask -TaskName $TaskName -TaskMode 'WatchFirestone'
+    Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    Set-State $State 'watchTaskRefreshResult' 'Refreshed'
+    Set-State $State 'installedAutomationTaskModeAfter' 'WatchFirestone'
+    Write-Host '已使用当前脚本刷新持续修复监听器，旧版驻留逻辑不会继续触发 Firestone 重启。'
+    return $true
+  } catch {
+    Set-State $State 'watchTaskRefreshResult' 'Failed'
+    Set-State $State 'watchTaskRefreshError' $_.Exception.Message
+    Write-Warning "刷新已安装的 Firestone2Green 监听器失败，本次一键启动仍会继续：$($_.Exception.Message)"
+    return $false
+  }
+}
 function Install-LaunchTask {
   param(
     [string]$TaskName
@@ -1581,6 +2015,24 @@ function Invoke-Verify {
   $exes = Get-OverwolfExecutables -Roots $roots
   $integrity = Test-FirestoneIntegrity -VersionRoot $versionRoot
   $coverage = Test-FirewallCoverage -Group $FirewallGroup -ExePaths $exes
+  $domainFirewallGroup = Get-FirestoneExactDomainFirewallGroup
+  $domainCoverage = Test-FirewallCoverage -Group $domainFirewallGroup -ExePaths $exes
+  $domainRules = @(Get-NetFirewallRule -Group $domainFirewallGroup -ErrorAction SilentlyContinue)
+  $domainRuleNames = @($domainRules | ForEach-Object { [string]$_.DisplayName })
+  $domainFirewallMode = if (@($domainRuleNames | Where-Object { $_ -like 'Firestone2Green AuthOnlyOnline Domain*' }).Count -gt 0) {
+    'AuthOnlyOnline'
+  } elseif (@($domainRuleNames | Where-Object { $_ -like 'Firestone2Green DataOnline Domain*' }).Count -gt 0) {
+    'DataOnline'
+  } else {
+    ''
+  }
+  $domainFirewallMethod = if (@($domainRuleNames | Where-Object { $_ -like '* Domain IP -*' }).Count -gt 0) {
+    'ResolvedIpFirewall'
+  } elseif ($domainRules.Count -gt 0) {
+    'DynamicFqdnFirewall'
+  } else {
+    ''
+  }
   $procs = Get-OverwolfProcessSnapshot
   $tcp = Get-OverwolfTcpSnapshot -Processes $procs
   $externalTcp = Get-ExternalTcpSnapshot -TcpRows $tcp
@@ -1599,6 +2051,14 @@ function Invoke-Verify {
   Set-State $State 'exeRoots' $roots
   Set-State $State 'exeCount' $exes.Count
   Set-State $State 'firewall' $coverage
+  Set-State $State 'domainFirewallStatus' ([pscustomobject]@{
+    group = $domainFirewallGroup
+    mode = $domainFirewallMode
+    method = $domainFirewallMethod
+    ruleCount = $domainCoverage.ruleCount
+    covered = $domainCoverage.covered
+    missing = $domainCoverage.missing
+  })
   Set-State $State 'processes' $procArray
   Set-State $State 'tcp' $tcpArray
   Set-State $State 'externalTcp' $externalTcpArray
@@ -1615,10 +2075,35 @@ function Invoke-Verify {
     ($currentShieldHosts.Count -eq 1) -and
     ($currentShieldHosts -contains '73ybnsv6auhl6x2hv5tvdoppcq0oecmq.lambda-url.us-west-2.on.aws')
   )
-  $isAuthOnlyOnline = (($State.Contains('networkMode') -and $State['networkMode'] -eq 'AuthOnlyOnline') -or ($coverage.ruleCount -eq 0 -and $looksLikeAuthOnlyOnlineHosts))
-  $isDataOnline = (($State.Contains('networkMode') -and $State['networkMode'] -eq 'DataOnline') -or ($coverage.ruleCount -eq 0 -and $looksLikeDataOnlineHosts))
-  $networkPolicyOk = if ($isDataOnline -or $isAuthOnlyOnline) { $true } else { $coverage.covered }
+  $hasDomainFirewallCoverage = ($domainCoverage.ruleCount -gt 0 -and $domainCoverage.covered)
+  $looksLikeAuthOnlyOnlineFirewall = ($hasDomainFirewallCoverage -and $domainFirewallMode -eq 'AuthOnlyOnline')
+  $looksLikeDataOnlineFirewall = ($hasDomainFirewallCoverage -and $domainFirewallMode -eq 'DataOnline')
+  $isAuthOnlyOnline = ($coverage.ruleCount -eq 0 -and ($looksLikeAuthOnlyOnlineHosts -or $looksLikeAuthOnlyOnlineFirewall))
+  $isDataOnline = ($coverage.ruleCount -eq 0 -and ($looksLikeDataOnlineHosts -or $looksLikeDataOnlineFirewall))
+  $requestedOnlineMode = if ($State.Contains('networkMode')) { [string]$State['networkMode'] } else { '' }
+  $networkPolicyOk = if ($isDataOnline -or $isAuthOnlyOnline) {
+    $true
+  } elseif ($requestedOnlineMode -in @('DataOnline','AuthOnlyOnline')) {
+    $false
+  } else {
+    $coverage.covered
+  }
   Set-State $State 'networkPolicyOk' ([bool]$networkPolicyOk)
+  $networkProtectionDegraded = [bool](
+    $domainFirewallMethod -eq 'ResolvedIpFirewall' -or
+    ($State.Contains('networkProtectionDegraded') -and $State['networkProtectionDegraded'])
+  )
+  Set-State $State 'networkProtectionDegraded' $networkProtectionDegraded
+  $stateDomainBlockMethod = if ($State.Contains('domainBlockMethod')) { [string]$State['domainBlockMethod'] } else { '' }
+  $exactDomainMethod = if ($domainFirewallMethod) {
+    $domainFirewallMethod
+  } elseif ($currentShieldHosts.Count -gt 0) {
+    'Hosts'
+  } elseif ($stateDomainBlockMethod) {
+    $stateDomainBlockMethod
+  } else {
+    'None'
+  }
   $tcpPolicyOk = if ($isDataOnline -or $isAuthOnlyOnline) { $true } else { ($externalTcpArray.Count -eq 0) }
   Set-State $State 'tcpPolicyOk' ([bool]$tcpPolicyOk)
   if ($isDataOnline) { Set-State $State 'networkMode' 'DataOnline' }
@@ -1628,10 +2113,13 @@ function Invoke-Verify {
   Write-Host "`n摘要："
   [pscustomobject]@{
     Version = $versionName
-    NetworkMode = if ($isAuthOnlyOnline) { 'AuthOnlyOnline' } elseif ($isDataOnline) { 'DataOnline' } else { 'StrictOffline' }
+    NetworkMode = if ($isAuthOnlyOnline) { 'AuthOnlyOnline' } elseif ($isDataOnline) { 'DataOnline' } elseif ($requestedOnlineMode) { $requestedOnlineMode } else { 'StrictOffline' }
     IntegrityOK = $integrity.ok
     FirewallCovered = $coverage.covered
     FirewallRules = $coverage.ruleCount
+    ExactDomainMethod = $exactDomainMethod
+    ExactDomainFirewallRules = $domainCoverage.ruleCount
+    NetworkProtectionDegraded = $networkProtectionDegraded
     NetworkPolicyOK = $networkPolicyOk
     Processes = $procArray.Count
     TcpConnections = $tcpArray.Count
@@ -1674,8 +2162,7 @@ function Invoke-Apply {
   $hosts = Get-RemoteHostsFromLocalApp -VersionRoot $versionRoot
   Set-State $State 'hostsExtracted' $hosts
   if (-not $SkipHosts) {
-    $hostsMaintenance = Set-HostsBlock -Hosts $hosts
-    Set-State $State 'hostsMaintenance' $hostsMaintenance
+    Set-ExactDomainBlockResilient -State $State -Hosts $hosts -NetworkMode 'StrictOffline' -BroadProgramFirewallActive | Out-Null
     Set-State $State 'hostsBlocked' $hosts
   }
 
@@ -1720,7 +2207,8 @@ function Invoke-LocalAutomationJsonPost {
   param(
     [Parameter(Mandatory = $true)][uri]$Uri,
     [Parameter(Mandatory = $true)][string]$Body,
-    [string]$HostHeader = ''
+    [string]$HostHeader = '',
+    [int]$TimeoutMilliseconds = 20000
   )
 
   if ($Uri.Scheme -ne 'http' -or $Uri.Host -notin @('localhost', '127.0.0.1', '::1')) {
@@ -1729,14 +2217,15 @@ function Invoke-LocalAutomationJsonPost {
   if ($HostHeader -and $HostHeader -ne "localhost:$($Uri.Port)") {
     throw "拒绝无效的 automation Host 头：$HostHeader"
   }
+  if ($TimeoutMilliseconds -lt 250) { $TimeoutMilliseconds = 250 }
 
   $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Uri)
   $request.Method = 'POST'
   $request.Proxy = $null
   $request.ContentType = 'application/json; charset=utf-8'
   $request.Accept = 'application/json'
-  $request.Timeout = 20000
-  $request.ReadWriteTimeout = 20000
+  $request.Timeout = $TimeoutMilliseconds
+  $request.ReadWriteTimeout = $TimeoutMilliseconds
   $request.KeepAlive = $false
   if ($HostHeader) { $request.Host = $HostHeader }
 
@@ -1759,8 +2248,9 @@ function Invoke-LocalAutomationJsonPost {
       $reader.Dispose()
     }
   } catch [System.Net.WebException] {
-    $webResponse = [System.Net.HttpWebResponse]$_.Exception.Response
-    $statusText = if ($webResponse) { "HTTP $([int]$webResponse.StatusCode) $($webResponse.StatusDescription)" } else { $_.Exception.Status.ToString() }
+    $webException = $_.Exception
+    $webResponse = [System.Net.HttpWebResponse]$webException.Response
+    $statusText = if ($webResponse) { "HTTP $([int]$webResponse.StatusCode) $($webResponse.StatusDescription)" } else { $webException.Status.ToString() }
     $errorText = ''
     if ($webResponse) {
       try {
@@ -1770,29 +2260,69 @@ function Invoke-LocalAutomationJsonPost {
       $webResponse.Dispose()
     }
     $errorText = ([string]$errorText -replace '\s+', ' ').Trim()
-    if ($errorText -match '(?i)invalid hostname') {
-      throw "本机 automation 请求失败：$statusText；HTTP.sys 拒绝了 Host 名称。"
+    $message = if ($errorText -match '(?i)invalid hostname') {
+      "本机 automation 请求失败：$statusText；HTTP.sys 拒绝了 Host 名称。"
+    } else {
+      "本机 automation 请求失败：$statusText；$($webException.Message)"
     }
-    throw "本机 automation 请求失败：$statusText；$($_.Exception.Message)"
+    $kind = switch ($webException.Status) {
+      ([System.Net.WebExceptionStatus]::Timeout) { 'TimedOut'; break }
+      ([System.Net.WebExceptionStatus]::ConnectFailure) { 'ConnectionFailed'; break }
+      ([System.Net.WebExceptionStatus]::NameResolutionFailure) { 'ConnectionFailed'; break }
+      ([System.Net.WebExceptionStatus]::ReceiveFailure) { 'ConnectionClosed'; break }
+      ([System.Net.WebExceptionStatus]::SendFailure) { 'ConnectionClosed'; break }
+      ([System.Net.WebExceptionStatus]::ConnectionClosed) { 'ConnectionClosed'; break }
+      ([System.Net.WebExceptionStatus]::ProtocolError) { 'ProtocolError'; break }
+      default { 'Other' }
+    }
+    $wrapped = [System.InvalidOperationException]::new($message, $webException)
+    $wrapped.Data['AutomationFailureKind'] = $kind
+    throw $wrapped
   } finally {
     if ($response) { $response.Dispose() }
   }
 
   if ([string]::IsNullOrWhiteSpace($responseText)) {
-    throw '本机 automation 返回了空响应。'
+    $emptyResponse = [System.IO.InvalidDataException]::new('本机 automation 返回了空响应。')
+    $emptyResponse.Data['AutomationFailureKind'] = 'InvalidResponse'
+    throw $emptyResponse
   }
   try {
     return $responseText | ConvertFrom-Json -ErrorAction Stop
   } catch {
-    throw "本机 automation 返回了无效 JSON：$($_.Exception.Message)"
+    $invalidResponse = [System.IO.InvalidDataException]::new("本机 automation 返回了无效 JSON：$($_.Exception.Message)", $_.Exception)
+    $invalidResponse.Data['AutomationFailureKind'] = 'InvalidResponse'
+    throw $invalidResponse
   }
+}
+
+function Get-AutomationExceptionKind {
+  param([System.Exception]$Exception)
+  $current = $Exception
+  while ($current) {
+    try {
+      if ($current.Data -and $current.Data.Contains('AutomationFailureKind')) {
+        return [string]$current.Data['AutomationFailureKind']
+      }
+    } catch {}
+    if ($current -is [System.Net.WebException]) {
+      if ($current.Status -eq [System.Net.WebExceptionStatus]::Timeout) { return 'TimedOut' }
+      if ($current.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) { return 'ConnectionFailed' }
+      if ($current.Status -in @([System.Net.WebExceptionStatus]::ReceiveFailure, [System.Net.WebExceptionStatus]::SendFailure, [System.Net.WebExceptionStatus]::ConnectionClosed)) { return 'ConnectionClosed' }
+      if ($current.Status -eq [System.Net.WebExceptionStatus]::ProtocolError) { return 'ProtocolError' }
+    }
+    $current = $current.InnerException
+  }
+  if ([string]$Exception.Message -match '(?i)timed?\s*out|timeout|超时') { return 'TimedOut' }
+  return 'Other'
 }
 
 function Invoke-AutomationCommand {
   param(
     [int]$Port,
     [string]$CommandId,
-    [hashtable]$CommandArgs
+    [hashtable]$CommandArgs,
+    [int]$TimeoutMilliseconds = 20000
   )
   if ($Port -lt 1 -or $Port -gt 65535) { throw "无效的 automation 端口：$Port" }
 
@@ -1802,30 +2332,31 @@ function Invoke-AutomationCommand {
     [pscustomobject]@{ Name = '127.0.0.1 + Host: localhost'; Uri = "http://127.0.0.1:$Port/"; HostHeader = "localhost:$Port" }
   )
   $errors = @()
+  $failureKinds = @()
   foreach ($target in $targets) {
     try {
-      return Invoke-LocalAutomationJsonPost -Uri ([uri]$target.Uri) -Body $body -HostHeader $target.HostHeader
+      return Invoke-LocalAutomationJsonPost -Uri ([uri]$target.Uri) -Body $body -HostHeader $target.HostHeader -TimeoutMilliseconds $TimeoutMilliseconds
     } catch {
+      $kind = Get-AutomationExceptionKind -Exception $_.Exception
+      $failureKinds += $kind
       $errors += "$($target.Name)：$($_.Exception.Message)"
     }
   }
-  throw "automation 接口不可用（已绕过系统代理并尝试本机 Host 兼容）：$($errors -join '；')"
+  $aggregateKind = if ($failureKinds.Count -gt 0 -and @($failureKinds | Where-Object { $_ -ne 'TimedOut' }).Count -eq 0) { 'TimedOut' } else { 'Other' }
+  $aggregate = [System.InvalidOperationException]::new("automation 接口不可用（已绕过系统代理并尝试本机 Host 兼容）：$($errors -join '；')")
+  $aggregate.Data['AutomationFailureKind'] = $aggregateKind
+  $aggregate.Data['AutomationFailureKinds'] = ($failureKinds -join ',')
+  throw $aggregate
 }
+
 function Wait-AutomationServer {
   param([int]$Port, [int]$TimeoutSeconds = 30)
   Write-Step "等待 Overwolf 本地 automation 接口：http://localhost:$Port/"
-  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-  do {
-    try {
-      $result = Invoke-AutomationCommand -Port $Port -CommandId 'pingServer' -CommandArgs @{}
-      if ($result.success) {
-        Write-Host 'automation 接口可用。'
-        return $true
-      }
-    } catch {
-      Start-Sleep -Milliseconds 500
-    }
-  } while ((Get-Date) -lt $deadline)
+  $ready = Wait-AnyAutomationServerReady -Ports @($Port) -TimeoutSeconds $TimeoutSeconds
+  if ($ready) {
+    Write-Host 'automation 接口可用。'
+    return $true
+  }
   throw "automation 接口未在 $TimeoutSeconds 秒内可用：localhost:$Port"
 }
 
@@ -2423,34 +2954,387 @@ function Get-FirestoneAppProcesses {
   return @($rows)
 }
 
+function Get-AutomationPortOwnerInfo {
+  param([int]$Port)
+  $listeners = @()
+  $lookupSucceeded = $false
+  $lookupSource = ''
+
+  if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+    try {
+      # Query the complete Listen set so a genuinely closed port is an
+      # authoritative empty result instead of a provider "no match" error.
+      $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
+        Where-Object { [int]$_.LocalPort -eq $Port } |
+        ForEach-Object {
+          [pscustomobject]@{
+            LocalAddress = [string]$_.LocalAddress
+            LocalPort = [int]$_.LocalPort
+            OwningProcess = [int]$_.OwningProcess
+          }
+        })
+      $lookupSucceeded = $true
+      $lookupSource = 'Get-NetTCPConnection'
+    } catch {}
+  }
+
+  if (-not $lookupSucceeded) {
+    try {
+      $netstatPath = Join-Path $env:SystemRoot 'System32\netstat.exe'
+      $netstatLines = @(& $netstatPath -ano -p tcp 2>$null)
+      if ($LASTEXITCODE -eq 0) {
+        $lookupSucceeded = $true
+        $lookupSource = 'netstat'
+        foreach ($line in $netstatLines) {
+          if ($line -notmatch '^\s*TCP\s+(?<local>\S+)\s+\S+\s+LISTENING\s+(?<pid>\d+)\s*$') { continue }
+          if ($matches['local'] -notmatch (':' + [regex]::Escape([string]$Port) + '$')) { continue }
+          $listeners += [pscustomobject]@{
+            LocalAddress = [string]$matches['local']
+            LocalPort = $Port
+            OwningProcess = [int]$matches['pid']
+          }
+        }
+      }
+    } catch {}
+  }
+
+  $rows = @()
+  $seen = @{}
+  foreach ($listener in $listeners) {
+    $pidValue = [int]$listener.OwningProcess
+    $key = "$pidValue|$($listener.LocalAddress)"
+    if ($seen.ContainsKey($key)) { continue }
+    $seen[$key] = $true
+    $processName = ''
+    $processPath = ''
+    try {
+      $owner = Get-Process -Id $pidValue -ErrorAction Stop
+      $processName = [string]$owner.ProcessName
+      try { $processPath = [string]$owner.Path } catch {}
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($processPath) -or [string]::IsNullOrWhiteSpace($processName)) {
+      try {
+        $ownerCim = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace($processName)) { $processName = [string]$ownerCim.Name }
+        if ([string]::IsNullOrWhiteSpace($processPath)) { $processPath = [string]$ownerCim.ExecutablePath }
+      } catch {}
+    }
+    $rows += [pscustomobject]@{
+      localAddress = [string]$listener.LocalAddress
+      localPort = $Port
+      pid = $pidValue
+      owner = $processName
+      path = $processPath
+    }
+  }
+
+  $first = $rows | Select-Object -First 1
+  return [pscustomobject][ordered]@{
+    lookupSucceeded = $lookupSucceeded
+    lookupSource = $lookupSource
+    listenerPresent = ($rows.Count -gt 0)
+    listeners = @($rows)
+    owner = if ($first) { [string]$first.owner } else { '' }
+    pid = if ($first) { [int]$first.pid } else { 0 }
+    path = if ($first) { [string]$first.path } else { '' }
+  }
+}
+
+function Test-LocalTcpPortState {
+  param(
+    [int]$Port,
+    [int]$TimeoutMilliseconds = 800
+  )
+  $client = New-Object System.Net.Sockets.TcpClient
+  $async = $null
+  try {
+    $async = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
+    if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMilliseconds, $false)) {
+      return [pscustomobject]@{ state = 'TimedOut'; error = 'TCP connect timed out' }
+    }
+    try {
+      $client.EndConnect($async)
+      return [pscustomobject]@{ state = 'Connected'; error = '' }
+    } catch [System.Net.Sockets.SocketException] {
+      return [pscustomobject]@{ state = 'Closed'; error = $_.Exception.Message }
+    }
+  } catch {
+    return [pscustomobject]@{ state = 'Closed'; error = $_.Exception.Message }
+  } finally {
+    try { if ($async -and $async.AsyncWaitHandle) { $async.AsyncWaitHandle.Close() } } catch {}
+    try { $client.Close() } catch {}
+  }
+}
+
+function Get-AutomationPortStatus {
+  param(
+    [int]$Port,
+    [int]$TimeoutMilliseconds = 1000
+  )
+  if ($Port -lt 1 -or $Port -gt 65535) { throw "无效的 automation 端口：$Port" }
+
+  $ownerInfo = Get-AutomationPortOwnerInfo -Port $Port
+  if ($ownerInfo.lookupSucceeded -and -not $ownerInfo.listenerPresent) {
+    return [pscustomobject][ordered]@{
+      port = $Port
+      status = 'Closed'
+      listenerPresent = $false
+      ownerInfo = $ownerInfo
+      pingResponse = $null
+      error = ''
+      failureKind = 'ConnectionFailed'
+      tcpState = 'Closed'
+    }
+  }
+
+  $tcpState = $null
+  if (-not $ownerInfo.lookupSucceeded) {
+    $tcpState = Test-LocalTcpPortState -Port $Port -TimeoutMilliseconds $TimeoutMilliseconds
+    if ($tcpState.state -eq 'Closed') {
+      return [pscustomobject][ordered]@{
+        port = $Port
+        status = 'Closed'
+        listenerPresent = $false
+        ownerInfo = $ownerInfo
+        pingResponse = $null
+        error = [string]$tcpState.error
+        failureKind = 'ConnectionFailed'
+        tcpState = 'Closed'
+      }
+    }
+    if ($tcpState.state -eq 'TimedOut') {
+      return [pscustomobject][ordered]@{
+        port = $Port
+        status = 'TimedOut'
+        listenerPresent = $false
+        ownerInfo = $ownerInfo
+        pingResponse = $null
+        error = [string]$tcpState.error
+        failureKind = 'TimedOut'
+        tcpState = 'TimedOut'
+      }
+    }
+  }
+
+  $response = $null
+  $errorMessage = ''
+  $failureKind = ''
+  try {
+    $response = Invoke-AutomationCommand -Port $Port -CommandId 'pingServer' -CommandArgs @{} -TimeoutMilliseconds $TimeoutMilliseconds
+    if ($response -and $response.PSObject.Properties['success'] -and [bool]$response.success) {
+      return [pscustomobject][ordered]@{
+        port = $Port
+        status = 'ValidAutomation'
+        listenerPresent = [bool]$ownerInfo.listenerPresent
+        ownerInfo = $ownerInfo
+        pingResponse = $response
+        error = ''
+        failureKind = ''
+        tcpState = if ($tcpState) { [string]$tcpState.state } else { 'Connected' }
+      }
+    }
+    $failureKind = 'InvalidResponse'
+    $errorMessage = '端口返回 JSON，但 pingServer success 不为 true。'
+  } catch {
+    $failureKind = Get-AutomationExceptionKind -Exception $_.Exception
+    $errorMessage = $_.Exception.Message
+  }
+
+  $status = if ($failureKind -eq 'TimedOut') { 'TimedOut' } else { 'OccupiedNonAutomation' }
+  return [pscustomobject][ordered]@{
+    port = $Port
+    status = $status
+    listenerPresent = [bool]$ownerInfo.listenerPresent
+    ownerInfo = $ownerInfo
+    pingResponse = $response
+    error = $errorMessage
+    failureKind = $failureKind
+    tcpState = if ($tcpState) { [string]$tcpState.state } else { 'Connected' }
+  }
+}
+
 function Test-AutomationServerReady {
   param([int]$Port)
-  try {
-    $result = Invoke-AutomationCommand -Port $Port -CommandId 'pingServer' -CommandArgs @{}
-    return [bool]($result.success)
-  } catch {
-    return $false
-  }
+  $status = Get-AutomationPortStatus -Port $Port
+  return ($status.status -eq 'ValidAutomation')
 }
 
 function Get-AutomationPortsToTry {
   param([int]$RequestedPort)
-  $primary = if ($RequestedPort -gt 0) { [int]$RequestedPort } else { 18765 }
-  return @($primary)
+  $primary = if ($RequestedPort -ge 1 -and $RequestedPort -le 65535) {
+    [int]$RequestedPort
+  } else {
+    $Script:DefaultAutomationPort
+  }
+  $candidates = @($primary, $Script:DefaultAutomationPort) + @($Script:AutomationFallbackPorts)
+  $ports = New-Object System.Collections.Generic.List[int]
+  $seen = @{}
+  foreach ($candidate in $candidates) {
+    if ($candidate -lt 1 -or $candidate -gt 65535) { continue }
+    if ($seen.ContainsKey([string]$candidate)) { continue }
+    $seen[[string]$candidate] = $true
+    [void]$ports.Add([int]$candidate)
+  }
+  return @($ports.ToArray())
 }
+
+function Get-AutomationPortCompatibilityMode {
+  param([int]$Port)
+  if ($Port -eq $Script:DefaultAutomationPort) { return 'Default' }
+  return 'FiniteFallback'
+}
+
+function Set-EffectiveAutomationPortState {
+  param(
+    [System.Collections.IDictionary]$State,
+    [int]$RequestedPort,
+    [int]$EffectivePort,
+    $PingResponse,
+    [string]$LaunchResult
+  )
+  Set-State $State 'requestedAutomationPort' $RequestedPort
+  Set-State $State 'effectiveAutomationPort' $EffectivePort
+  Set-State $State 'automationPortFallbackUsed' ($EffectivePort -ne $RequestedPort)
+  Set-State $State 'automationPortCompatibilityMode' (Get-AutomationPortCompatibilityMode -Port $EffectivePort)
+  Set-State $State 'automationPingResponse' $PingResponse
+  Set-State $State 'automationAvailable' $true
+  if ($LaunchResult) { Set-State $State 'automationLaunchResult' $LaunchResult }
+}
+
+function Write-AutomationPortSelectionNotice {
+  param(
+    [int]$RequestedPort,
+    [int]$EffectivePort,
+    [string]$OriginalStatus = ''
+  )
+  if ($EffectivePort -eq $RequestedPort) { return }
+  if ($RequestedPort -eq $Script:DefaultAutomationPort -and $OriginalStatus -eq 'OccupiedNonAutomation') {
+    Write-Host "默认 Automation 端口 $($Script:DefaultAutomationPort) 已被其他程序占用，已自动切换到 $EffectivePort。"
+  } else {
+    Write-Host "请求的 Automation 端口 $RequestedPort 不可用，已自动切换到 $EffectivePort。"
+  }
+}
+
 function Wait-AnyAutomationServerReady {
   param(
     [int[]]$Ports,
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+    [int]$ProbeTimeoutMilliseconds = 900
   )
+  $orderedPorts = @($Ports | Where-Object { $_ -ge 1 -and $_ -le 65535 } | Select-Object -Unique)
+  if ($orderedPorts.Count -eq 0) { return $null }
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   do {
-    foreach ($p in $Ports) {
-      if (Test-AutomationServerReady -Port $p) { return $p }
+    foreach ($p in $orderedPorts) {
+      $status = Get-AutomationPortStatus -Port $p -TimeoutMilliseconds $ProbeTimeoutMilliseconds
+      if ($status.status -eq 'ValidAutomation') { return $status }
+      if ((Get-Date) -ge $deadline) { break }
     }
-    Start-Sleep -Milliseconds 500
+    if ((Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 350 }
   } while ((Get-Date) -lt $deadline)
   return $null
+}
+
+function Set-OriginalAutomationPortState {
+  param(
+    [System.Collections.IDictionary]$State,
+    [int]$RequestedPort,
+    $PortStatus
+  )
+  Set-State $State 'requestedAutomationPort' $RequestedPort
+  Set-State $State 'originalPortStatus' ([string]$PortStatus.status)
+  Set-State $State 'originalPortOwner' ([string]$PortStatus.ownerInfo.owner)
+  Set-State $State 'originalPortPid' ([int]$PortStatus.ownerInfo.pid)
+  Set-State $State 'originalPortPath' ([string]$PortStatus.ownerInfo.path)
+  Set-State $State 'originalPortListeners' @($PortStatus.ownerInfo.listeners)
+}
+
+function Resolve-ExistingAutomationPort {
+  param(
+    [System.Collections.IDictionary]$State,
+    [int]$RequestedPort,
+    [int]$TimeoutSeconds = 8
+  )
+  $ports = @(Get-AutomationPortsToTry -RequestedPort $RequestedPort)
+  $probeRecords = @()
+  $ready = $null
+  foreach ($candidate in $ports) {
+    $status = Get-AutomationPortStatus -Port $candidate -TimeoutMilliseconds 900
+    $probeRecords += [pscustomobject][ordered]@{
+      port = $candidate
+      statusBefore = [string]$status.status
+      owner = [string]$status.ownerInfo.owner
+      pid = [int]$status.ownerInfo.pid
+      path = [string]$status.ownerInfo.path
+      pingResponse = $status.pingResponse
+      error = [string]$status.error
+    }
+    if ($candidate -eq $ports[0]) {
+      Set-OriginalAutomationPortState -State $State -RequestedPort $ports[0] -PortStatus $status
+    }
+    if ($status.status -eq 'ValidAutomation') {
+      $ready = $status
+      break
+    }
+  }
+  Set-State $State 'attemptedAutomationPorts' @($probeRecords)
+
+  if (-not $ready -and $TimeoutSeconds -gt 0) {
+    $ready = Wait-AnyAutomationServerReady -Ports $ports -TimeoutSeconds $TimeoutSeconds
+  }
+  if (-not $ready) { return $null }
+
+  $effectivePort = [int]$ready.port
+  Set-EffectiveAutomationPortState -State $State -RequestedPort $ports[0] -EffectivePort $effectivePort -PingResponse $ready.pingResponse -LaunchResult 'ReusedExistingAutomation'
+  Write-AutomationPortSelectionNotice -RequestedPort $ports[0] -EffectivePort $effectivePort -OriginalStatus ([string]$State['originalPortStatus'])
+  Write-Host "automation 接口可用：localhost:$effectivePort"
+  Write-Host "F2G_EFFECTIVE_AUTOMATION_PORT: $effectivePort"
+  return $effectivePort
+}
+
+function Invoke-FirestoneLaunchCommand {
+  param(
+    [string[]]$Launchers,
+    [string[]]$Arguments,
+    [string]$Description
+  )
+  $attempts = @()
+  foreach ($launcherPath in @($Launchers)) {
+    $attempt = [ordered]@{
+      launcher = $launcherPath
+      arguments = ($Arguments -join ' ')
+      description = $Description
+      startedAt = (Get-Date).ToString('o')
+      accepted = $false
+      processId = 0
+      error = ''
+    }
+    try {
+      Write-Step ("$Description [{0}]" -f (Split-Path -Leaf $launcherPath))
+      $process = Start-Process -FilePath $launcherPath -ArgumentList $Arguments -PassThru
+      $attempt['accepted'] = $true
+      if ($process) { $attempt['processId'] = [int]$process.Id }
+      $attempt['completedAt'] = (Get-Date).ToString('o')
+      $attempts += [pscustomobject]$attempt
+      return [pscustomobject][ordered]@{
+        accepted = $true
+        launcher = $launcherPath
+        processId = [int]$attempt['processId']
+        attempts = @($attempts)
+      }
+    } catch {
+      $attempt['error'] = $_.Exception.Message
+      $attempt['completedAt'] = (Get-Date).ToString('o')
+      $attempts += [pscustomobject]$attempt
+      Write-Warning "$(Split-Path -Leaf $launcherPath) 启动失败：$($_.Exception.Message)"
+    }
+  }
+  return [pscustomobject][ordered]@{
+    accepted = $false
+    launcher = ''
+    processId = 0
+    attempts = @($attempts)
+  }
 }
 
 function Start-FirestoneLaunchWithFallback {
@@ -2464,96 +3348,315 @@ function Start-FirestoneLaunchWithFallback {
     throw '未找到可用的 Overwolf 启动程序。'
   }
 
-  $attempts = @()
-  $primaryPort = [int](@(Get-AutomationPortsToTry -RequestedPort $Port)[0])
-  $standardArgs = @('-launchapp', $AppId, '-from-desktop', '--automation', "$primaryPort", '--enable-automation')
-  $total = $Launchers.Count
-  $attemptIndex = 0
+  $requestedPort = if ($Port -ge 1 -and $Port -le 65535) {
+    [int]$Port
+  } else {
+    $Script:DefaultAutomationPort
+  }
+  $ports = @(Get-AutomationPortsToTry -RequestedPort $requestedPort)
+  Set-State $State 'requestedAutomationPort' $requestedPort
+  Set-State $State 'effectiveAutomationPort' $null
+  Set-State $State 'automationPortFallbackUsed' $false
+  Set-State $State 'automationPortCompatibilityMode' 'None'
+  Set-State $State 'legacyAutomationCompatibilityUsed' $false
 
-  foreach ($launcherPath in $Launchers) {
-    $attemptIndex++
-    $launcherName = Split-Path -Leaf $launcherPath
-    $candidateName = "标准启动：-launchapp -from-desktop + automation $primaryPort"
-    Write-Step ("启动方式 {0}/{1}：{2} [{3}]" -f $attemptIndex, $total, $candidateName, $launcherName)
-    $record = [ordered]@{
-      index = $attemptIndex
-      name = $candidateName
-      launcher = $launcherPath
-      ports = ([string]$primaryPort)
-      preArgs = ''
-      args = ($standardArgs -join ' ')
+  $orderedLaunchers = @(
+    $Launchers | Sort-Object `
+      @{ Expression = { if ((Split-Path -Leaf $_) -ieq 'OverwolfLauncher.exe') { 0 } else { 1 } } }, `
+      @{ Expression = { $_ } }
+  )
+  $preferredLauncher = $orderedLaunchers[0]
+  $legacyLauncher = @(
+    $orderedLaunchers |
+      Where-Object { (Split-Path -Leaf $_) -ieq 'OverwolfLauncher.exe' } |
+      Select-Object -First 1
+  )
+  if (-not $legacyLauncher) { $legacyLauncher = $preferredLauncher } else { $legacyLauncher = $legacyLauncher[0] }
+
+  $overwolfRoot = Split-Path -Parent $preferredLauncher
+  $runtimePath = Join-Path $overwolfRoot 'Overwolf.exe'
+  if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) { $runtimePath = $preferredLauncher }
+
+  $standardArgs = @('-launchapp', $AppId, '-from-desktop')
+  $normalLaunchAttempts = New-Object System.Collections.Generic.List[object]
+  $flow = [ordered]@{ firestoneLaunchIssued = $false }
+  $records = [ordered]@{}
+
+  foreach ($candidatePort in $ports) {
+    $status = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 1000
+    $records[[string]$candidatePort] = [ordered]@{
+      port = $candidatePort
+      compatibilityMode = Get-AutomationPortCompatibilityMode -Port $candidatePort
       startedAt = (Get-Date).ToString('o')
-      automationReady = $false
-      automationPort = $null
-      firestoneProcessCount = 0
+      statusBefore = [string]$status.status
+      owner = [string]$status.ownerInfo.owner
+      pid = [int]$status.ownerInfo.pid
+      path = [string]$status.ownerInfo.path
+      listeners = @($status.ownerInfo.listeners)
+      launchAttempted = $false
+      launchMode = ''
+      launchExecutable = ''
+      launchArguments = ''
+      launchStarted = $false
+      launchProcessId = 0
+      launchHistory = @()
+      statusAfter = [string]$status.status
+      pingResponse = $status.pingResponse
+      error = [string]$status.error
+      completedAt = (Get-Date).ToString('o')
     }
-    $recordAdded = $false
+    if ($candidatePort -eq $requestedPort) {
+      Set-OriginalAutomationPortState -State $State -RequestedPort $requestedPort -PortStatus $status
+    }
+  }
+
+  $syncRecords = {
+    $snapshot = @()
+    foreach ($candidatePort in $ports) {
+      $item = $records[[string]$candidatePort]
+      if ($item) { $snapshot += [pscustomobject]$item }
+    }
+    Set-State $State 'attemptedAutomationPorts' @($snapshot)
+  }
+  & $syncRecords
+
+  $finishReady = {
+    param($Ready, [string]$LaunchResult, [string]$SelectedMode, [string]$SelectedLauncher)
+    $readyPort = [int]$Ready.port
+    $record = $records[[string]$readyPort]
+    if ($record) {
+      $record['statusAfter'] = 'ValidAutomation'
+      $record['pingResponse'] = $Ready.pingResponse
+      $record['completedAt'] = (Get-Date).ToString('o')
+    }
+    & $syncRecords
+    Set-State $State 'launchAttempts' @($normalLaunchAttempts.ToArray())
+    Set-State $State 'selectedLaunchMode' $SelectedMode
+    Set-State $State 'selectedLauncher' $SelectedLauncher
+    if ($SelectedMode -like '*Legacy*') {
+      Set-State $State 'legacyAutomationCompatibilityUsed' $true
+    }
+    Set-EffectiveAutomationPortState -State $State -RequestedPort $requestedPort -EffectivePort $readyPort -PingResponse $Ready.pingResponse -LaunchResult $LaunchResult
+    Write-AutomationPortSelectionNotice -RequestedPort $requestedPort -EffectivePort $readyPort -OriginalStatus ([string]$State['originalPortStatus'])
+    Write-Host "automation 接口可用：localhost:$readyPort"
+    Write-Host "F2G_EFFECTIVE_AUTOMATION_PORT: $readyPort"
+    return $readyPort
+  }
+
+  $tryTwoStage = {
+    param([int]$candidatePort)
+    $record = $records[[string]$candidatePort]
+    $runtimeArgs = @('--automation', "$candidatePort", '--enable-automation')
+    if ($record) {
+      $record['launchAttempted'] = $true
+      $record['launchMode'] = 'TwoStageRuntime'
+      $record['launchExecutable'] = $runtimePath
+      $record['launchArguments'] = ($runtimeArgs -join ' ')
+    }
     try {
-      Start-Process -FilePath $launcherPath -ArgumentList $standardArgs
-      $readyPort = Wait-AnyAutomationServerReady -Ports @($primaryPort) -TimeoutSeconds 30
-      if ($readyPort) {
-        $record['automationReady'] = $true
-        $record['automationPort'] = $readyPort
-        $record['completedAt'] = (Get-Date).ToString('o')
-        $attempts += [pscustomobject]$record
-        $recordAdded = $true
-        Set-State $State 'launchAttempts' $attempts
-        Set-State $State 'selectedLaunchMode' $candidateName
-        Set-State $State 'selectedLauncher' $launcherPath
-        Set-State $State 'effectiveAutomationPort' $readyPort
-        Write-Host "automation 接口可用：localhost:$readyPort"
-        return [int]$readyPort
+      Write-Step "启动 Overwolf Automation runtime：localhost:$candidatePort"
+      $bootstrap = Start-Process -FilePath $runtimePath -ArgumentList $runtimeArgs -PassThru
+      if ($record) {
+        $record['launchStarted'] = $true
+        if ($bootstrap) { $record['launchProcessId'] = [int]$bootstrap.Id }
       }
-
+      & $syncRecords
+      $standardLauncherUsed = ''
+      $standardLaunchIssuedHere = $false
       $running = @(Get-FirestoneAppProcesses -AppId $AppId)
-      $record['firestoneProcessCount'] = $running.Count
-      $record['error'] = "automation 接口未在 30 秒内可用；端口：$primaryPort"
-      Write-Warning ("{0} 未打开 automation，准备切换下一个可用的 Overwolf 启动程序。" -f $launcherName)
+      if (-not $flow.firestoneLaunchIssued) {
+        if ($running.Count -eq 0) {
+          # The runtime is only a bootstrap. Firestone must be launched before
+          # pingServer can become valid on the affected Overwolf builds.
+          $standardResult = Invoke-FirestoneLaunchCommand -Launchers $orderedLaunchers -Arguments $standardArgs -Description '启动 Firestone（Automation runtime 已启动）'
+          foreach ($attempt in @($standardResult.attempts)) { [void]$normalLaunchAttempts.Add($attempt) }
+          if ($standardResult.accepted) {
+            $flow.firestoneLaunchIssued = $true
+            $standardLaunchIssuedHere = $true
+            $standardLauncherUsed = $standardResult.launcher
+            if ($record) {
+              $record['launchHistory'] = @($record['launchHistory']) + @($standardResult.attempts)
+            }
+          } else {
+            if ($record) { $record['error'] = 'Automation runtime 已启动，但 Firestone 标准启动命令失败。' }
+            & $syncRecords
+            return $null
+          }
+        } else {
+          $flow.firestoneLaunchIssued = $true
+        }
+      }
+
+      # Give the first ordinary Firestone launch enough time to initialize. If
+      # a previous candidate already launched Firestone, only the finite
+      # runtime probe is needed for the next candidate.
+      $readyTimeoutSeconds = if ($standardLaunchIssuedHere) { 25 } else { 8 }
+      $ready = Wait-AnyAutomationServerReady -Ports @($candidatePort) -TimeoutSeconds $readyTimeoutSeconds
+      if ($ready) {
+        $launchResult = if ($standardLaunchIssuedHere) { 'StartedAutomationTwoStage' } else { 'StartedAutomationRuntimeForExistingFirestone' }
+        $selectedMode = if ($standardLauncherUsed) { 'StandardLauncher' } else { 'ExistingFirestone' }
+        return [int](& $finishReady $ready $launchResult $selectedMode $standardLauncherUsed)
+      }
+      if ($record) { $record['error'] = 'Firestone 启动后未通过 pingServer 验证。' }
+      & $syncRecords
     } catch {
-      $record['error'] = $_.Exception.Message
-      Write-Warning ("{0} 启动失败：{1}" -f $launcherName, $_.Exception.Message)
-    } finally {
-      if (-not $record.Contains('completedAt')) { $record['completedAt'] = (Get-Date).ToString('o') }
-      if (-not $recordAdded) {
-        $attempts += [pscustomobject]$record
-        Set-State $State 'launchAttempts' $attempts
+      if ($record) { $record['error'] = $_.Exception.Message }
+      & $syncRecords
+    }
+    return $null
+  }
+
+  # A validated endpoint is already owned by a working Automation service.
+  # Reuse it without sending another Firestone launch request; this prevents
+  # continuous repair from turning a healthy session into a restart loop.
+  foreach ($candidatePort in $ports) {
+    $status = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 900
+    if ($status.status -eq 'ValidAutomation') {
+      $record = $records[[string]$candidatePort]
+      if ($record) {
+        $record['statusAfter'] = 'ValidAutomation'
+        $record['pingResponse'] = $status.pingResponse
+      }
+      return [int](& $finishReady $status 'ReusedExistingAutomation' 'ReuseExistingAutomation' '')
+    }
+  }
+
+  # The primary port keeps the exact v0.2.7-compatible direct command first.
+  # This restores the startup mode that works on older Overwolf builds.
+  $primaryBefore = Get-AutomationPortStatus -Port $requestedPort -TimeoutMilliseconds 1000
+  $primaryRecord = $records[[string]$requestedPort]
+  if ($primaryBefore.status -eq 'Closed') {
+    $legacyArgs = @('-launchapp', $AppId, '-from-desktop', '--automation', "$requestedPort", '--enable-automation')
+    if ($primaryRecord) {
+      $primaryRecord['launchAttempted'] = $true
+      $primaryRecord['launchMode'] = 'LegacyDirectLauncher'
+      $primaryRecord['launchExecutable'] = $legacyLauncher
+      $primaryRecord['launchArguments'] = ($legacyArgs -join ' ')
+    }
+    $legacyResult = Invoke-FirestoneLaunchCommand -Launchers @($legacyLauncher) -Arguments $legacyArgs -Description "使用旧版兼容参数启动 Firestone + Automation（端口 $requestedPort）"
+    foreach ($attempt in @($legacyResult.attempts)) { [void]$normalLaunchAttempts.Add($attempt) }
+    if ($legacyResult.accepted) {
+      $flow.firestoneLaunchIssued = $true
+      if ($primaryRecord) {
+        $primaryRecord['launchStarted'] = $true
+        $primaryRecord['launchProcessId'] = [int]$legacyResult.processId
+        $primaryRecord['launchHistory'] = @($legacyResult.attempts)
+      }
+      & $syncRecords
+      $ready = Wait-AnyAutomationServerReady -Ports @($requestedPort) -TimeoutSeconds 25
+      if ($ready) {
+        return [int](& $finishReady $ready 'StartedAutomationLegacyDirect' 'LegacyDirectLauncher' $legacyResult.launcher)
+      }
+      if ($primaryRecord) { $primaryRecord['error'] = '旧版兼容启动后未通过 pingServer 验证；将继续尝试有限备用端口。' }
+    } else {
+      if ($primaryRecord) {
+        $primaryRecord['error'] = '旧版兼容启动命令未能执行；将尝试两段式 Automation 启动。'
+        $primaryRecord['launchHistory'] = @($legacyResult.attempts)
       }
     }
+    & $syncRecords
+    # Compatibility may have started Firestone without exposing Automation.
+    # Always allow one two-stage attempt on the primary port: when a launch
+    # was already accepted, tryTwoStage only bootstraps runtime and waits;
+    # it never issues a second -launchapp request.
+    $twoStageResult = & $tryTwoStage $requestedPort
+    if ($null -ne $twoStageResult) { return [int]$twoStageResult }
+    & $syncRecords
+  }
 
-    if (($attemptIndex -lt $total) -and -not $NoKill) {
-      Write-Host '清理上一次未成功开启 automation 的 Overwolf/Firestone 进程后重试。'
-      Stop-OverwolfProcesses | Out-Null
-      Start-Sleep -Seconds 2
+  # For an occupied/timeout primary port, and for a primary launch that did
+  # not expose Automation, use only the finite fallback list. Each fallback
+  # follows the documented two-stage flow: bootstrap the selected port first,
+  # then issue at most one ordinary Firestone launch request.
+  $fallbackPorts = @($ports | Where-Object { $_ -ne $requestedPort })
+  foreach ($candidatePort in $fallbackPorts) {
+    $before = Get-AutomationPortStatus -Port $candidatePort -TimeoutMilliseconds 1000
+    $record = $records[[string]$candidatePort]
+    if ($record) {
+      $record['statusBefore'] = [string]$before.status
+      $record['owner'] = [string]$before.ownerInfo.owner
+      $record['pid'] = [int]$before.ownerInfo.pid
+      $record['path'] = [string]$before.ownerInfo.path
+      $record['listeners'] = @($before.ownerInfo.listeners)
+      $record['pingResponse'] = $before.pingResponse
+      $record['statusAfter'] = [string]$before.status
+      $record['error'] = [string]$before.error
+    }
+    if ($before.status -eq 'ValidAutomation') {
+      return [int](& $finishReady $before 'ReusedExistingAutomation' 'ReuseExistingAutomation' '')
+    }
+    if ($before.status -eq 'OccupiedNonAutomation') {
+      if ($record) { $record['error'] = '端口已被非 Automation 服务占用；已安全跳过，不会结束占用进程。' }
+      & $syncRecords
+      continue
+    }
+    if ($before.status -eq 'TimedOut') {
+      if ($record) { $record['error'] = '端口连接或响应超时；已安全跳过，不会结束占用进程。' }
+      & $syncRecords
+      continue
+    }
+    if ($before.status -ne 'Closed') { continue }
+
+    $twoStageResult = & $tryTwoStage $candidatePort
+    if ($null -ne $twoStageResult) { return [int]$twoStageResult }
+  }
+
+  # Last resort: send one ordinary launch only when no previous launch request
+  # was accepted and no Firestone process is already running. This keeps the
+  # user-facing fallback safe and avoids repeated restart attempts.
+  if (-not $flow.firestoneLaunchIssued) {
+    $running = @(Get-FirestoneAppProcesses -AppId $AppId)
+    if ($running.Count -eq 0) {
+      $standardResult = Invoke-FirestoneLaunchCommand -Launchers $orderedLaunchers -Arguments $standardArgs -Description 'Automation 端口均不可用，仍尝试标准启动 Firestone'
+      foreach ($attempt in @($standardResult.attempts)) { [void]$normalLaunchAttempts.Add($attempt) }
+      if ($standardResult.accepted) {
+        $flow.firestoneLaunchIssued = $true
+        Set-State $State 'selectedLaunchMode' 'StandardLauncherDegraded'
+        Set-State $State 'selectedLauncher' $standardResult.launcher
+      }
+    } else {
+      $flow.firestoneLaunchIssued = $true
     }
   }
 
-  Write-Warning '标准 automation 启动失败，改用普通方式打开 Firestone，避免用户感觉软件无响应。'
-  try {
-    Start-Process -FilePath $Launchers[0] -ArgumentList @('-launchapp', $AppId, '-from-desktop')
-  } catch {
-    Write-Warning "普通启动也失败：$($_.Exception.Message)"
-  }
+  & $syncRecords
+  Set-State $State 'launchAttempts' @($normalLaunchAttempts.ToArray())
   Set-State $State 'automationAvailable' $false
-  throw "automation 接口不可用：已尝试标准启动方式（$primaryPort）和可用的 Overwolf 启动程序；未再使用未经验证的兼容参数。请确认 Firestone 能通过 ‘-launchapp $AppId -from-desktop’ 正常打开。"
+  Set-State $State 'launchOnlyFallback' ([bool]$flow.firestoneLaunchIssued)
+  $finalLaunchResult = if ($flow.firestoneLaunchIssued) { 'LaunchOnlyDegraded' } else { 'LaunchFailed' }
+  Set-State $State 'automationLaunchResult' $finalLaunchResult
+  Set-State $State 'launchResult' $finalLaunchResult
+  Set-State $State 'authSkippedReason' ("Automation 端口 $($ports -join ', ') 均未通过 pingServer 验证。")
+  if ($flow.firestoneLaunchIssued) {
+    Write-Host 'F2G_LAUNCH_ONLY_DEGRADED: true'
+    Write-Warning 'Firestone 已尝试启动，但自动授权接口暂时不可用；本次进入仅启动降级模式。'
+    return $null
+  }
+  throw "Firestone 启动失败：Overwolf 启动程序无法执行，且 Automation 端口 $($ports -join ', ') 均不可用。"
 }
+
 function Start-FirestoneWithAutomation {
   param(
     [System.Collections.IDictionary]$State,
-    [switch]$RestartExisting,
     [switch]$SkipMonitor
   )
   $launchers = @(Get-OverwolfLaunchExecutablePaths)
-  if ($RestartExisting -and -not $NoKill) {
-    Write-Step '检测到 Firestone 已运行但未开启 automation，自动重启并补授权'
-    Set-State $State 'autoRestartStopped' (Stop-OverwolfProcesses)
-  }
-  Write-Step "启动 Firestone，并开启本地 automation 端口 $AutomationPort"
+  Write-Step "启动 Firestone，并为本次启动安全选择 Automation 端口（请求端口：$AutomationPort）"
   $effectivePort = Start-FirestoneLaunchWithFallback -State $State -Launchers $launchers -Port $AutomationPort
+
+  if (-not $effectivePort) {
+    Set-State $State 'automationAvailable' $false
+    Set-State $State 'authAttempted' $false
+    Write-Host '兼容降级完成：Firestone 启动命令已发送，网络规则保持正常；Automation 不可用时不会再退出码 1。'
+    if (-not $SkipMonitor) { Invoke-Monitor -State $State }
+    return
+  }
+
   Start-Sleep -Seconds 3
-  Set-AuthOnlyOnlineNetwork -State $State
+  Set-State $State 'authAttempted' $true
   Invoke-FirestoneRuntimeAuth -State $State -Port $effectivePort -AppId $AppId -PlanId $AuthPlanId
-  Set-State $State 'networkMode' 'AuthOnlyOnline'
   Set-State $State 'automationAvailable' $true
+  Set-State $State 'launchResult' 'Authorized'
   if (-not $SkipMonitor) { Invoke-Monitor -State $State }
 }
 
@@ -2571,6 +3674,7 @@ function Invoke-Launch {
 function Invoke-PrepareLaunchAuth {
   param([System.Collections.IDictionary]$State)
   Assert-Admin '启动前校验本地包，并提前恢复全功能数据网络'
+  [void](Refresh-InstalledFirestoneWatchTask -State $State -TaskName $TaskName)
   if (-not $NoKill) { Set-State $State 'stopped' (Stop-OverwolfProcesses) }
   $backupRoot = New-Directory (Join-Path $ReportDir ('backup_' + (Get-TimeStamp)))
   $versionRoot = Get-FirestoneVersionRoot -AppId $AppId
@@ -2617,26 +3721,24 @@ function Invoke-LaunchAuth {
 
 function Invoke-AutoAuth {
   param([System.Collections.IDictionary]$State)
-  Assert-Admin '持续修复需要维持网络规则，并在 automation 可用时刷新授权'
+  Assert-Admin '持续修复需要维持网络规则，并在 Automation 可用时刷新授权'
   Set-AuthOnlyOnlineNetwork -State $State
   Set-State $State 'networkMode' 'AuthOnlyOnline'
   try {
-    $readyPort = Wait-AnyAutomationServerReady -Ports (Get-AutomationPortsToTry -RequestedPort $AutomationPort) -TimeoutSeconds 5
-    if (-not $readyPort) { throw "automation 接口未在 5 秒内可用：localhost:$AutomationPort" }
-    Set-State $State 'effectiveAutomationPort' $readyPort
-    Set-State $State 'automationAvailable' $true
+    $readyPort = Resolve-ExistingAutomationPort -State $State -RequestedPort $AutomationPort -TimeoutSeconds 8
+    if (-not $readyPort) { throw "Automation 接口暂时不可用；已有限检查端口 $((Get-AutomationPortsToTry -RequestedPort $AutomationPort) -join ', ')。" }
     Invoke-FirestoneRuntimeAuth -State $State -Port $readyPort -AppId $AppId -PlanId $AuthPlanId
   } catch {
     Set-State $State 'automationAvailable' $false
     Set-State $State 'authSkippedReason' $_.Exception.Message
+    Set-State $State 'automationLaunchResult' 'AuthRefreshDeferred'
     $runningFirestone = @(Get-FirestoneAppProcesses -AppId $AppId)
     Set-State $State 'detectedFirestoneProcessCount' $runningFirestone.Count
     if ($runningFirestone.Count -gt 0) {
       Set-State $State 'detectedFirestoneProcesses' $runningFirestone
-      Write-Host "持续修复：检测到 Firestone 已运行但 automation 端口不可用，正在静默重启并补授权。"
-      Start-FirestoneWithAutomation -State $State -RestartExisting -SkipMonitor
+      Write-Host '持续修复：Firestone 已运行，但本次未发现有效 Automation 接口；为避免频繁重启，本次仅维持网络规则并等待下次启动事件。'
     } else {
-      Write-Host "持续修复：网络规则已维持；当前 Firestone 未运行或 automation 端口不可用。下次启动后会自动检查并补授权。"
+      Write-Host '持续修复：网络规则已维持；当前 Firestone 未运行或 Automation 暂不可用，下次启动后会再次有限探测。'
     }
   }
 }
@@ -2769,7 +3871,9 @@ try {
       Invoke-Launch -State $state
     }
     'Auth' {
-      Invoke-FirestoneRuntimeAuth -State $state -Port $AutomationPort -AppId $AppId -PlanId $AuthPlanId
+      $effectivePort = Resolve-ExistingAutomationPort -State $state -RequestedPort $AutomationPort -TimeoutSeconds 8
+      if (-not $effectivePort) { throw "未找到有效的 Overwolf Automation 接口；已有限检查端口 $((Get-AutomationPortsToTry -RequestedPort $AutomationPort) -join ', ')。" }
+      Invoke-FirestoneRuntimeAuth -State $state -Port $effectivePort -AppId $AppId -PlanId $AuthPlanId
     }
     'LaunchAuth' {
       Invoke-LaunchAuth -State $state
